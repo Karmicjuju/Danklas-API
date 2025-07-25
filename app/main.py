@@ -81,3 +81,23 @@ def query_knowledge_base(
         citations=["doc1.pdf", "doc2.pdf"]
     )
 
+
+class StatusResponse(BaseModel):
+    status: str
+    lastSyncedAt: str
+
+@app.get("/knowledge-bases/{kb_id}/status", response_model=StatusResponse)
+def knowledge_base_status(kb_id: str = Path(..., description="Knowledge Base ID")):
+    # TODO: Replace with real Bedrock KB status lookup
+    return StatusResponse(status="READY", lastSyncedAt="2024-07-25T12:00:00Z")
+
+
+class RefreshResponse(BaseModel):
+    jobId: str
+    message: str
+
+@app.post("/knowledge-bases/{kb_id}/refresh", response_model=RefreshResponse, status_code=202)
+def refresh_knowledge_base(kb_id: str = Path(..., description="Knowledge Base ID")):
+    # TODO: Trigger async KB data sync job
+    return RefreshResponse(jobId="mock-job-123", message=f"Refresh started for KB {kb_id}")
+
