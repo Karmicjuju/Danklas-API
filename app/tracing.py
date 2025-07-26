@@ -48,7 +48,8 @@ def configure_tracing():
         try:
             otlp_exporter = OTLPSpanExporter(
                 endpoint=otlp_endpoint,
-                insecure=os.getenv("OTEL_EXPORTER_OTLP_INSECURE", "true").lower() == "true",
+                insecure=os.getenv("OTEL_EXPORTER_OTLP_INSECURE", "true").lower()
+                == "true",
             )
 
             # Add batch span processor
