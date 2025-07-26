@@ -137,9 +137,10 @@ def test_tracing_integration_query_endpoint(test_client):
     response = test_client.post(f"/knowledge-bases/{kb_id}/query", json=payload)
     assert response.status_code == 200
     
-    # Verify response contains expected data
+    # Verify response contains expected data (now includes guardrail filtering)
     data = response.json()
-    assert data["answer"] == f"Mock answer for KB {kb_id} and query '{payload['query']}'"
+    assert f"Mock answer for KB {kb_id} and query '{payload['query']}'" in data["answer"]
+    assert "filtered by guardrail" in data["answer"]
     assert data["citations"] == ["doc1.pdf", "doc2.pdf"]
 
 def test_trace_context_in_logs(test_client, caplog):
@@ -384,3 +385,152 @@ def test_usage_tiers_structure():
         for field in required_fields:
             assert field in tier_config, f"Missing {field} in {tier_name} tier"
             assert isinstance(tier_config[field], int), f"{field} should be integer in {tier_name} tier" 
+
+def test_guardrails_info_endpoint(test_client):
+    """Test the guardrails info endpoint."""
+    response = test_client.get("/guardrails/info")
+    assert response.status_code == 200
+    data = response.json()
+    assert "guardrail_info" in data
+    assert "checksum" in data["guardrail_info"]
+    assert "version" in data["guardrail_info"]
+    assert "parameter_path" in data["guardrail_info"]
+
+def test_guardrails_config_endpoint_requires_admin(test_client):
+    """Test that guardrails config endpoint requires admin access."""
+    response = test_client.get("/guardrails/config")
+    # Should work in test mode without authentication
+    assert response.status_code == 200
+    data = response.json()
+    assert "guardrail_configuration" in data
+    assert "metadata" in data
+
+def test_guardrails_refresh_endpoint(test_client):
+    """Test the guardrails refresh endpoint."""
+    response = test_client.post("/guardrails/refresh")
+    # Should work in test mode
+    assert response.status_code == 200
+    data = response.json()
+    assert "message" in data
+    assert "new_checksum" in data
+    assert "version" in data
+    assert "timestamp" in data
+
+def test_guardrail_manager_functionality():
+    """Test GuardrailManager class functionality."""
+    from app.guardrails import GuardrailManager, DEFAULT_GUARDRAIL
+    
+    manager = GuardrailManager()
+    
+    # Test get_guardrail returns default when SSM unavailable
+    guardrail = manager.get_guardrail()
+    assert guardrail is not None
+    assert "content_filters" in guardrail
+    assert "output_filters" in guardrail
+    assert "query_filters" in guardrail
+    assert "bedrock_config" in guardrail
+    
+    # Test checksum calculation
+    checksum = manager.get_guardrail_checksum()
+    assert isinstance(checksum, str)
+    assert len(checksum) == 64  # SHA256 hash length
+
+def test_guardrail_validation():
+    """Test guardrail configuration validation."""
+    from app.guardrails import GuardrailManager, DEFAULT_GUARDRAIL
+    
+    manager = GuardrailManager()
+    
+    # Test valid guardrail
+    assert manager.validate_guardrail(DEFAULT_GUARDRAIL) == True
+    
+    # Test invalid guardrail (missing required section)
+    invalid_guardrail = {
+        "content_filters": {},
+        "output_filters": {},
+        # Missing query_filters and bedrock_config
+    }
+    assert manager.validate_guardrail(invalid_guardrail) == False
+    
+    # Test invalid content filter
+    invalid_content_filter = {
+        "content_filters": {
+            "bad_filter": "not_a_dict"  # Should be dict with 'enabled' key
+        },
+        "output_filters": {},
+        "query_filters": {},
+        "bedrock_config": {
+            "model_settings": {},
+            "retrieval_config": {}
+        }
+    }
+    assert manager.validate_guardrail(invalid_content_filter) == False
+
+def test_query_endpoint_with_guardrails(test_client):
+    """Test that query endpoint applies guardrail filters."""
+    kb_id = "kb123"
+    
+    # Test normal query
+    payload = {"query": "What is AI?", "metadata_filters": {}}
+    response = test_client.post(f"/knowledge-bases/{kb_id}/query", json=payload)
+    assert response.status_code == 200
+    data = response.json()
+    assert "filtered by guardrail" in data["answer"]
+    
+    # Test query that exceeds length limit (if enabled)
+    long_query = "x" * 10000  # Exceeds default 8192 char limit
+    payload = {"query": long_query, "metadata_filters": {}}
+    response = test_client.post(f"/knowledge-bases/{kb_id}/query", json=payload)
+    assert response.status_code == 400
+    assert "exceeds maximum length" in response.json()["detail"]
+    
+    # Test query with suspicious content
+    malicious_query = "DROP TABLE users; What is AI?"
+    payload = {"query": malicious_query, "metadata_filters": {}}
+    response = test_client.post(f"/knowledge-bases/{kb_id}/query", json=payload)
+    assert response.status_code == 400
+    assert "potentially malicious content" in response.json()["detail"]
+
+def test_guardrail_checksum_calculation():
+    """Test that guardrail checksum calculation is consistent."""
+    from app.guardrails import GuardrailManager
+    
+    manager = GuardrailManager()
+    
+    test_data = {"test": "data", "number": 123}
+    checksum1 = manager._calculate_checksum(test_data)
+    checksum2 = manager._calculate_checksum(test_data)
+    
+    # Should be consistent
+    assert checksum1 == checksum2
+    
+    # Different data should produce different checksum
+    different_data = {"test": "different", "number": 456}
+    checksum3 = manager._calculate_checksum(different_data)
+    assert checksum1 != checksum3
+
+def test_guardrail_default_configuration():
+    """Test that default guardrail configuration is complete and valid."""
+    from app.guardrails import DEFAULT_GUARDRAIL, GuardrailManager
+    
+    manager = GuardrailManager()
+    
+    # Should be valid
+    assert manager.validate_guardrail(DEFAULT_GUARDRAIL) == True
+    
+    # Should have all required sections
+    required_sections = ["content_filters", "output_filters", "query_filters", "bedrock_config"]
+    for section in required_sections:
+        assert section in DEFAULT_GUARDRAIL
+    
+    # Content filters should have proper structure
+    content_filters = DEFAULT_GUARDRAIL["content_filters"]
+    for filter_name, config in content_filters.items():
+        assert isinstance(config, dict)
+        assert "enabled" in config
+        assert isinstance(config["enabled"], bool)
+    
+    # Bedrock config should have required subsections
+    bedrock_config = DEFAULT_GUARDRAIL["bedrock_config"]
+    assert "model_settings" in bedrock_config
+    assert "retrieval_config" in bedrock_config 

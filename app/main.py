@@ -16,9 +16,11 @@ from opentelemetry.trace import Status, StatusCode
 # Configure tracing before creating app
 from app.tracing import configure_tracing, instrument_fastapi, get_tracer, create_span
 from app.rate_limiting import create_limiter, rate_limit_exceeded_handler, get_tenant_limits, tenant_rate_limit, get_usage_stats
+from app.guardrails import get_current_guardrail, get_guardrail_info, get_guardrail_manager
 
-# Initialize tracing
+# Initialize tracing and guardrails
 configure_tracing()
+guardrail_manager = get_guardrail_manager()
 
 app = FastAPI(
     title="Danklas API",
@@ -284,6 +286,63 @@ async def get_tenant_usage_stats(request: Request):
         "usage_statistics": stats
     }
 
+# Add guardrail information endpoint for DANK-5.1
+@app.get("/guardrails/info")
+async def get_guardrails_info(request: Request):
+    """Get current guardrail configuration information."""
+    info = get_guardrail_info()
+    return {
+        "guardrail_info": info,
+        "loaded_at_startup": True,
+        "cache_enabled": True
+    }
+
+@app.get("/guardrails/config")
+async def get_guardrails_config(request: Request):
+    """Get full guardrail configuration (admin access)."""
+    # Check admin access
+    user_roles = getattr(request.state, "roles", [])
+    if DANKLAS_ENV != "test" and "admin" not in user_roles:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Admin access required to view guardrail configuration"
+        )
+    
+    guardrail = get_current_guardrail()
+    return {
+        "guardrail_configuration": guardrail,
+        "metadata": get_guardrail_info()
+    }
+
+@app.post("/guardrails/refresh")
+async def refresh_guardrails(request: Request):
+    """Force refresh guardrail configuration from SSM Parameter Store (admin access)."""
+    # Check admin access
+    user_roles = getattr(request.state, "roles", [])
+    if DANKLAS_ENV != "test" and "admin" not in user_roles:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Admin access required to refresh guardrails"
+        )
+    
+    try:
+        # Force refresh from SSM
+        new_guardrail = guardrail_manager.get_guardrail(force_refresh=True)
+        new_checksum = guardrail_manager.get_guardrail_checksum()
+        
+        return {
+            "message": "Guardrail configuration refreshed successfully",
+            "new_checksum": new_checksum,
+            "version": new_guardrail.get("version", "unknown"),
+            "timestamp": time.time()
+        }
+    except Exception as e:
+        logger.error(f"Failed to refresh guardrails: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to refresh guardrail configuration"
+        )
+
 
 class QueryRequest(BaseModel):
     query: str
@@ -341,30 +400,77 @@ async def query_knowledge_base(
     # Check tenant access to KB
     check_kb_access(request, kb_id, required_roles=["user", "admin", "reader"])
     
+    # Get current guardrail configuration
+    guardrail = get_current_guardrail()
+    guardrail_checksum = guardrail_manager.get_guardrail_checksum()
+    
     # Create custom span for KB query operation
     with create_span("bedrock.knowledge_base.query") as span:
         span.set_attribute("kb.id", kb_id)
         span.set_attribute("kb.query", body.query)
         span.set_attribute("kb.has_filters", body.metadata_filters is not None)
         span.set_attribute("kb.tenant_id", getattr(request.state, "tenant_id", "unknown"))
+        span.set_attribute("kb.guardrail_checksum", guardrail_checksum)
         
         try:
+            # Apply query filters from guardrail
+            query_filters = guardrail.get("query_filters", {})
+            
+            # Check query length limit
+            query_limit = query_filters.get("query_length_limit", {})
+            if query_limit.get("enabled", False):
+                max_chars = query_limit.get("max_chars", 8192)
+                if len(body.query) > max_chars:
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail=f"Query exceeds maximum length of {max_chars} characters"
+                    )
+            
+            # Apply injection detection (basic check)
+            injection_detection = query_filters.get("injection_detection", {})
+            if injection_detection.get("enabled", False):
+                suspicious_patterns = ["<script", "javascript:", "DROP TABLE", "DELETE FROM"]
+                query_lower = body.query.lower()
+                for pattern in suspicious_patterns:
+                    if pattern.lower() in query_lower:
+                        raise HTTPException(
+                            status_code=status.HTTP_400_BAD_REQUEST,
+                            detail="Query contains potentially malicious content"
+                        )
+            
             # TODO: Call Bedrock RetrieveAndGenerate with guardrail JSON and metadata_filters
+            # In real implementation, guardrail would be passed to Bedrock API
+            bedrock_config = guardrail.get("bedrock_config", {})
+            model_settings = bedrock_config.get("model_settings", {})
+            retrieval_config = bedrock_config.get("retrieval_config", {})
+            
             # Simulate processing time
             import time
             time.sleep(0.1)
             
-            # Mock response
+            # Mock response with guardrail-filtered content
             response = QueryResponse(
-                answer=f"Mock answer for KB {kb_id} and query '{body.query}'",
+                answer=f"Mock answer for KB {kb_id} and query '{body.query}' (filtered by guardrail {guardrail_checksum[:8]})",
                 citations=["doc1.pdf", "doc2.pdf"]
             )
             
+            # Apply output filters
+            output_filters = guardrail.get("output_filters", {})
+            response_limit = output_filters.get("response_length_limit", {})
+            if response_limit.get("enabled", False):
+                max_tokens = response_limit.get("max_tokens", 4096)
+                # In real implementation, this would limit the Bedrock response
+                span.set_attribute("kb.response.max_tokens", max_tokens)
+            
             span.set_attribute("kb.response.citations_count", len(response.citations))
             span.set_attribute("kb.response.answer_length", len(response.answer))
+            span.set_attribute("kb.guardrail_applied", True)
             span.set_status(Status(StatusCode.OK))
             
             return response
+        except HTTPException:
+            # Re-raise HTTP exceptions (validation errors, etc.)
+            raise
         except Exception as e:
             span.set_status(Status(StatusCode.ERROR, str(e)))
             span.record_exception(e)

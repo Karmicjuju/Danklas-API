@@ -1,0 +1,26 @@
+# Danklas API Code Owners
+
+# Default owners for all files
+* @api-owners
+
+# Guardrail configurations require security team approval
+app/guardrails.py @security-team @api-owners
+guardrails/ @security-team @api-owners
+**/*guardrail* @security-team @api-owners
+.github/workflows/guardrail-approval.yml @security-team @api-owners
+
+# Authentication and authorization code requires security review
+app/main.py @security-team @api-owners
+app/rate_limiting.py @security-team @api-owners
+
+# Infrastructure changes require platform team approval
+terraform/ @platform-team @api-owners
+.github/workflows/ @platform-team @api-owners
+Dockerfile @platform-team @api-owners
+
+# CI/CD configuration
+.github/workflows/ci.yml @platform-team @api-owners
+
+# Documentation
+*.md @api-owners
+docs/ @api-owners 
