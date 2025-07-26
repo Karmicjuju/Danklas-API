@@ -10,8 +10,23 @@ from typing import List, Dict, Any
 import time
 import uuid
 import json
+from opentelemetry import trace
+from opentelemetry.trace import Status, StatusCode
 
-app = FastAPI()
+# Configure tracing before creating app
+from app.tracing import configure_tracing, instrument_fastapi, get_tracer, create_span
+
+# Initialize tracing
+configure_tracing()
+
+app = FastAPI(
+    title="Danklas API",
+    description="Multi-tenant facade for Amazon Bedrock Knowledge Bases",
+    version="1.0.0"
+)
+
+# Instrument FastAPI with OpenTelemetry
+instrument_fastapi(app)
 
 # --- Okta OIDC config (replace with your Okta values) ---
 OKTA_ISSUER = os.getenv("OKTA_ISSUER", "https://YOUR_OKTA_DOMAIN/oauth2/default")
@@ -88,14 +103,29 @@ logger.setLevel(logging.INFO)
 async def log_requests(request: Request, call_next):
     request_id = str(uuid.uuid4())
     start_time = time.time()
+    
+    # Get current span and add trace context to logs
+    current_span = trace.get_current_span()
+    span_context = current_span.get_span_context()
+    trace_id = f"{span_context.trace_id:032x}" if span_context.is_valid else "unknown"
+    span_id = f"{span_context.span_id:016x}" if span_context.is_valid else "unknown"
+    
     # Mock tenant extraction (replace with real logic)
     tenant = getattr(request.state, "user", {}).get("tenant_id", "unknown") if hasattr(request.state, "user") else "unknown"
+    
+    # Add trace context to span attributes
+    if current_span.is_recording():
+        current_span.set_attribute("http.request_id", request_id)
+        current_span.set_attribute("danklas.tenant", tenant)
+        current_span.set_attribute("http.client_ip", request.client.host)
     
     # Audit log entry for request start
     audit_logger.info(
         "request_started",
         extra={
             "request_id": request_id,
+            "trace_id": trace_id,
+            "span_id": span_id,
             "tenant": tenant,
             "method": request.method,
             "path": request.url.path,
@@ -109,11 +139,19 @@ async def log_requests(request: Request, call_next):
         response = await call_next(request)
         latency_ms = int((time.time() - start_time) * 1000)
         
+        # Add response attributes to span
+        if current_span.is_recording():
+            current_span.set_attribute("http.status_code", response.status_code)
+            current_span.set_attribute("danklas.latency_ms", latency_ms)
+            current_span.set_status(Status(StatusCode.OK))
+        
         # Application log
         logger.info(
             "request completed",
             extra={
                 "request_id": request_id,
+                "trace_id": trace_id,
+                "span_id": span_id,
                 "tenant": tenant,
                 "method": request.method,
                 "path": request.url.path,
@@ -127,6 +165,8 @@ async def log_requests(request: Request, call_next):
             "request_completed",
             extra={
                 "request_id": request_id,
+                "trace_id": trace_id,
+                "span_id": span_id,
                 "tenant": tenant,
                 "method": request.method,
                 "path": request.url.path,
@@ -140,11 +180,20 @@ async def log_requests(request: Request, call_next):
     except Exception as e:
         latency_ms = int((time.time() - start_time) * 1000)
         
+        # Add error attributes to span
+        if current_span.is_recording():
+            current_span.set_attribute("http.status_code", 500)
+            current_span.set_attribute("danklas.latency_ms", latency_ms)
+            current_span.set_status(Status(StatusCode.ERROR, str(e)))
+            current_span.record_exception(e)
+        
         # Application log for error
         logger.error(
             f"request failed: {e}",
             extra={
                 "request_id": request_id,
+                "trace_id": trace_id,
+                "span_id": span_id,
                 "tenant": tenant,
                 "method": request.method,
                 "path": request.url.path,
@@ -158,6 +207,8 @@ async def log_requests(request: Request, call_next):
             "request_failed",
             extra={
                 "request_id": request_id,
+                "trace_id": trace_id,
+                "span_id": span_id,
                 "tenant": tenant,
                 "method": request.method,
                 "path": request.url.path,
@@ -188,12 +239,33 @@ def query_knowledge_base(
     kb_id: str = Path(..., description="Knowledge Base ID"),
     body: QueryRequest = Body(...)
 ):
-    # TODO: Call Bedrock RetrieveAndGenerate with guardrail JSON and metadata_filters
-    # For now, return a mock response
-    return QueryResponse(
-        answer=f"Mock answer for KB {kb_id} and query '{body.query}'",
-        citations=["doc1.pdf", "doc2.pdf"]
-    )
+    # Create custom span for KB query operation
+    with create_span("bedrock.knowledge_base.query") as span:
+        span.set_attribute("kb.id", kb_id)
+        span.set_attribute("kb.query", body.query)
+        span.set_attribute("kb.has_filters", body.metadata_filters is not None)
+        
+        try:
+            # TODO: Call Bedrock RetrieveAndGenerate with guardrail JSON and metadata_filters
+            # Simulate processing time
+            import time
+            time.sleep(0.1)
+            
+            # Mock response
+            response = QueryResponse(
+                answer=f"Mock answer for KB {kb_id} and query '{body.query}'",
+                citations=["doc1.pdf", "doc2.pdf"]
+            )
+            
+            span.set_attribute("kb.response.citations_count", len(response.citations))
+            span.set_attribute("kb.response.answer_length", len(response.answer))
+            span.set_status(Status(StatusCode.OK))
+            
+            return response
+        except Exception as e:
+            span.set_status(Status(StatusCode.ERROR, str(e)))
+            span.record_exception(e)
+            raise
 
 
 class StatusResponse(BaseModel):
@@ -202,8 +274,23 @@ class StatusResponse(BaseModel):
 
 @app.get("/knowledge-bases/{kb_id}/status", response_model=StatusResponse)
 def knowledge_base_status(kb_id: str = Path(..., description="Knowledge Base ID")):
-    # TODO: Replace with real Bedrock KB status lookup
-    return StatusResponse(status="READY", lastSyncedAt="2024-07-25T12:00:00Z")
+    # Create custom span for KB status check
+    with create_span("bedrock.knowledge_base.status") as span:
+        span.set_attribute("kb.id", kb_id)
+        
+        try:
+            # TODO: Replace with real Bedrock KB status lookup
+            response = StatusResponse(status="READY", lastSyncedAt="2024-07-25T12:00:00Z")
+            
+            span.set_attribute("kb.status", response.status)
+            span.set_attribute("kb.last_synced", response.lastSyncedAt)
+            span.set_status(Status(StatusCode.OK))
+            
+            return response
+        except Exception as e:
+            span.set_status(Status(StatusCode.ERROR, str(e)))
+            span.record_exception(e)
+            raise
 
 
 class RefreshResponse(BaseModel):
@@ -212,6 +299,21 @@ class RefreshResponse(BaseModel):
 
 @app.post("/knowledge-bases/{kb_id}/refresh", response_model=RefreshResponse, status_code=202)
 def refresh_knowledge_base(kb_id: str = Path(..., description="Knowledge Base ID")):
-    # TODO: Trigger async KB data sync job
-    return RefreshResponse(jobId="mock-job-123", message=f"Refresh started for KB {kb_id}")
+    # Create custom span for KB refresh operation
+    with create_span("bedrock.knowledge_base.refresh") as span:
+        span.set_attribute("kb.id", kb_id)
+        
+        try:
+            # TODO: Trigger async KB data sync job
+            job_id = f"mock-job-{uuid.uuid4().hex[:8]}"
+            response = RefreshResponse(jobId=job_id, message=f"Refresh started for KB {kb_id}")
+            
+            span.set_attribute("kb.refresh.job_id", job_id)
+            span.set_status(Status(StatusCode.OK))
+            
+            return response
+        except Exception as e:
+            span.set_status(Status(StatusCode.ERROR, str(e)))
+            span.record_exception(e)
+            raise
 
