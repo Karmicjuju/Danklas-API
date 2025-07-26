@@ -3,24 +3,23 @@ name = "app"
 version = "0.1.0"
 description = ""
 authors = [
-    {name = "C4ptnh00k",email = "c4ptnh00k@pm.me"}
+    {name = "C4ptnh00k", email = "c4ptnh00k@pm.me"}
 ]
 readme = "README.md"
-requires-python = "^3.10"
+requires-python = ">=3.10,<4.0"
 dependencies = [
-    "fastapi (>=0.116.1,<0.117.0)",
-    "uvicorn (>=0.35.0,<0.36.0)",
-    "python-jose[cryptography] (>=3.5.0,<4.0.0)",
-    "requests (>=2.32.4,<3.0.0)",
-    "opentelemetry-sdk-extension-aws (>=2.1.0,<3.0.0)",
-    "opentelemetry-exporter-otlp (>=1.35.0,<2.0.0)",
-    "opentelemetry-instrumentation-fastapi (>=0.56b0,<0.57)",
-    "opentelemetry-instrumentation-requests (>=0.56b0,<0.57)",
-    "slowapi (>=0.1.9,<0.2.0)",
-    "redis (>=6.2.0,<7.0.0)",
-    "boto3 (>=1.39.14,<2.0.0)"
+    "fastapi>=0.116.1,<0.117.0",
+    "uvicorn>=0.35.0,<0.36.0",
+    "python-jose[cryptography]>=3.5.0,<4.0.0",
+    "requests>=2.32.4,<3.0.0",
+    "opentelemetry-sdk-extension-aws>=2.1.0,<3.0.0",
+    "opentelemetry-exporter-otlp>=1.35.0,<2.0.0",
+    "opentelemetry-instrumentation-fastapi>=0.56b0,<0.57",
+    "opentelemetry-instrumentation-requests>=0.56b0,<0.57",
+    "slowapi>=0.1.9,<0.2.0",
+    "redis>=6.2.0,<7.0.0",
+    "boto3>=1.39.14,<2.0.0"
 ]
-
 
 [build-system]
 requires = ["poetry-core>=2.0.0,<3.0.0"]
@@ -30,6 +29,7 @@ build-backend = "poetry.core.masonry.api"
 black = "^24.4.2"
 isort = "^5.13.2"
 pytest = "^8.2.2"
+httpx = "^0.28.0"
 
 [tool.isort]
 profile = "black"
