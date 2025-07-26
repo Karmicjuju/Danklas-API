@@ -7,6 +7,9 @@ from functools import lru_cache
 import logging
 from pydantic import BaseModel
 from typing import List, Dict, Any
+import time
+import uuid
+import json
 
 app = FastAPI()
 
@@ -55,6 +58,117 @@ class AuthMiddleware(BaseHTTPMiddleware):
         return await call_next(request)
 
 app.add_middleware(AuthMiddleware)
+
+class JSONLogFormatter(logging.Formatter):
+    def format(self, record):
+        log_record = {
+            "timestamp": self.formatTime(record, self.datefmt),
+            "level": record.levelname,
+            "message": record.getMessage(),
+        }
+        if hasattr(record, "extra"):
+            log_record.update(record.extra)
+        return json.dumps(log_record)
+
+# Configure audit logger for CloudWatch (DANK-3.2)
+audit_logger = logging.getLogger("danklas.audit")
+audit_handler = logging.StreamHandler()  # In production, this would be CloudWatch handler
+audit_handler.setFormatter(JSONLogFormatter())
+audit_logger.handlers = [audit_handler]
+audit_logger.setLevel(logging.INFO)
+
+# Configure application logger
+logger = logging.getLogger("danklas")
+handler = logging.StreamHandler()
+handler.setFormatter(JSONLogFormatter())
+logger.handlers = [handler]
+logger.setLevel(logging.INFO)
+
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    request_id = str(uuid.uuid4())
+    start_time = time.time()
+    # Mock tenant extraction (replace with real logic)
+    tenant = getattr(request.state, "user", {}).get("tenant_id", "unknown") if hasattr(request.state, "user") else "unknown"
+    
+    # Audit log entry for request start
+    audit_logger.info(
+        "request_started",
+        extra={
+            "request_id": request_id,
+            "tenant": tenant,
+            "method": request.method,
+            "path": request.url.path,
+            "client_ip": request.client.host,
+            "user_agent": request.headers.get("user-agent", ""),
+            "audit_type": "request_start"
+        }
+    )
+    
+    try:
+        response = await call_next(request)
+        latency_ms = int((time.time() - start_time) * 1000)
+        
+        # Application log
+        logger.info(
+            "request completed",
+            extra={
+                "request_id": request_id,
+                "tenant": tenant,
+                "method": request.method,
+                "path": request.url.path,
+                "status_code": response.status_code,
+                "latency_ms": latency_ms,
+            }
+        )
+        
+        # Audit log entry for successful request
+        audit_logger.info(
+            "request_completed",
+            extra={
+                "request_id": request_id,
+                "tenant": tenant,
+                "method": request.method,
+                "path": request.url.path,
+                "status_code": response.status_code,
+                "latency_ms": latency_ms,
+                "audit_type": "request_success"
+            }
+        )
+        
+        return response
+    except Exception as e:
+        latency_ms = int((time.time() - start_time) * 1000)
+        
+        # Application log for error
+        logger.error(
+            f"request failed: {e}",
+            extra={
+                "request_id": request_id,
+                "tenant": tenant,
+                "method": request.method,
+                "path": request.url.path,
+                "status_code": 500,
+                "latency_ms": latency_ms,
+            }
+        )
+        
+        # Audit log entry for failed request
+        audit_logger.error(
+            "request_failed",
+            extra={
+                "request_id": request_id,
+                "tenant": tenant,
+                "method": request.method,
+                "path": request.url.path,
+                "status_code": 500,
+                "latency_ms": latency_ms,
+                "error": str(e),
+                "audit_type": "request_failure"
+            }
+        )
+        
+        raise
 
 @app.get("/")
 def read_root():
