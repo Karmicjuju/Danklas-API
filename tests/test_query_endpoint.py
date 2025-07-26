@@ -1,15 +1,18 @@
 import os
+# Set environment before importing the app
 os.environ["DANKLAS_ENV"] = "test"
 
 import pytest
 from fastapi.testclient import TestClient
+from fastapi import HTTPException
+import app.main as main_module  # Import module to access functions
 from app.main import app
 
 client = TestClient(app)
 
-@pytest.fixture(scope="module")
+@pytest.fixture
 def test_client():
-    return TestClient(app)
+    return client
 
 def test_query_knowledge_base_success(test_client):
     kb_id = "kb123"
@@ -195,3 +198,98 @@ def test_tracing_refresh_endpoint(test_client):
     assert "jobId" in data
     assert data["jobId"].startswith("mock-job-")
     assert data["message"] == f"Refresh started for KB {kb_id}" 
+
+def test_tenant_mapping_in_logs(test_client, caplog, monkeypatch):
+    """Test that tenant_id is properly extracted and used in logs."""
+    # Use monkeypatch to temporarily modify the environment
+    monkeypatch.setenv("DANKLAS_ENV", "dev")  # Use dev mode for auth bypass but still test logging
+    
+    kb_id = "kb-test-tenant-123"
+    payload = {"query": "Test tenant mapping", "metadata_filters": {}}
+    
+    with caplog.at_level("INFO", logger="danklas.audit"):
+        response = test_client.post(f"/knowledge-bases/{kb_id}/query", json=payload)
+    
+    assert response.status_code == 200
+    
+    # In test environment, tenant should be "unauthenticated"
+    tenant_found = False
+    for record in caplog.records:
+        if record.name == "danklas.audit" and hasattr(record, "tenant"):
+            assert record.tenant == "unauthenticated"  # Expected in test mode
+            tenant_found = True
+    assert tenant_found, "Tenant not found in audit logs"
+
+def test_jwt_claim_extraction():
+    """Test JWT claim extraction logic directly."""
+    from app.main import verify_jwt
+    
+    # Mock the jwks response
+    original_get_jwks = main_module.get_jwks
+    
+    def mock_get_jwks():
+        # Return a mock JWKS for testing
+        return {
+            "keys": [{
+                "kty": "RSA",
+                "use": "sig",
+                "kid": "test-key-id",
+                "n": "test-n",
+                "e": "AQAB"
+            }]
+        }
+    
+    # Mock jwt.decode to return our test payload
+    import app.main
+    from jose import jwt as jose_jwt
+    original_decode = jose_jwt.decode
+    
+    def mock_decode(*args, **kwargs):
+        return {
+            "sub": "user123",
+            "tenant_id": "test-tenant",
+            "roles": ["admin", "user"],
+            "exp": 9999999999,
+            "aud": "api://default",
+            "iss": "https://test.okta.com"
+        }
+    
+    try:
+        main_module.get_jwks = mock_get_jwks
+        jose_jwt.decode = mock_decode
+        
+        result = verify_jwt("mock-token")
+        assert result["tenant_id"] == "test-tenant"
+        assert result["roles"] == ["admin", "user"]
+        assert result["sub"] == "user123"
+        
+    finally:
+        main_module.get_jwks = original_get_jwks
+        jose_jwt.decode = original_decode
+
+def test_kb_access_function(monkeypatch):
+    """Test the check_kb_access function directly."""
+    from app.main import check_kb_access
+    from unittest.mock import Mock
+    
+    # Create a mock request with tenant info
+    request = Mock()
+    request.state.tenant_id = "acme-corp"
+    request.state.roles = ["user"]
+    
+    # Test valid access
+    try:
+        check_kb_access(request, "kb-acme-corp-documents", ["user"], env="prod")
+        # Should not raise an exception
+    except Exception:
+        pytest.fail("Valid KB access should not raise exception")
+    
+    # Test invalid tenant access
+    with pytest.raises(HTTPException) as exc_info:
+        check_kb_access(request, "kb-other-tenant-docs", ["user"], env="prod")
+    assert "not accessible by tenant" in str(exc_info.value.detail)
+    
+    # Test insufficient role access
+    with pytest.raises(HTTPException) as exc_info:
+        check_kb_access(request, "kb-acme-corp-documents", ["admin"], env="prod")
+    assert "requires one of roles" in str(exc_info.value.detail) 
