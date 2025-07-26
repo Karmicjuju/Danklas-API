@@ -41,21 +41,25 @@ def configure_tracing():
     # Configure OTLP exporter (for AWS X-Ray via OTEL Collector)
     otlp_endpoint = os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4317")
 
-    try:
-        otlp_exporter = OTLPSpanExporter(
-            endpoint=otlp_endpoint,
-            insecure=os.getenv("OTEL_EXPORTER_OTLP_INSECURE", "true").lower() == "true",
-        )
+    # Skip OTLP exporter configuration in test environment
+    if environment == "test":
+        logger.info("Skipping OTLP exporter configuration in test environment")
+    else:
+        try:
+            otlp_exporter = OTLPSpanExporter(
+                endpoint=otlp_endpoint,
+                insecure=os.getenv("OTEL_EXPORTER_OTLP_INSECURE", "true").lower() == "true",
+            )
 
-        # Add batch span processor
-        span_processor = BatchSpanProcessor(otlp_exporter)
-        tracer_provider.add_span_processor(span_processor)
+            # Add batch span processor
+            span_processor = BatchSpanProcessor(otlp_exporter)
+            tracer_provider.add_span_processor(span_processor)
 
-        logger.info(f"OTLP exporter configured with endpoint: {otlp_endpoint}")
-    except Exception as e:
-        logger.warning(
-            f"Failed to configure OTLP exporter: {e}. Spans will not be exported."
-        )
+            logger.info(f"OTLP exporter configured with endpoint: {otlp_endpoint}")
+        except Exception as e:
+            logger.warning(
+                f"Failed to configure OTLP exporter: {e}. Spans will not be exported."
+            )
 
     # Set the global tracer provider
     trace.set_tracer_provider(tracer_provider)
