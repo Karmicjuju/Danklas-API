@@ -11,17 +11,36 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.10'
+          python-version: '3.13'
+          
       - name: Install Poetry
-        run: pip install poetry
+        uses: snok/install-poetry@v1
+        with:
+          version: 1.7.1
+          virtualenvs-create: true
+          virtualenvs-in-project: true
+          
+      - name: Cache Poetry dependencies
+        uses: actions/cache@v3
+        with:
+          path: .venv
+          key: poetry-${{ runner.os }}-${{ hashFiles('**/poetry.lock') }}
+          
       - name: Install dependencies
         run: poetry install
+        
       - name: Lint with black
         run: poetry run black --check .
+        
       - name: Lint with isort
         run: poetry run isort --check-only .
+        
       - name: Run tests
-        run: poetry run pytest 
+        env:
+          DANKLAS_ENV: test
+          ENABLE_RATE_LIMITING: false
+        run: poetry run pytest -v 
