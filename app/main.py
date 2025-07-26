@@ -267,6 +267,59 @@ async def log_requests(request: Request, call_next):
 def read_root():
     return {"Hello": "World"}
 
+@app.get("/health")
+async def health_check():
+    """Health check endpoint for Route 53 and load balancer health checks."""
+    import time
+    
+    # Basic health checks
+    health_status = {
+        "status": "healthy",
+        "timestamp": time.time(),
+        "version": "1.0.0",
+        "region": os.getenv("AWS_REGION", "unknown"),
+        "environment": DANKLAS_ENV
+    }
+    
+    # Check guardrail manager
+    try:
+        guardrail_info = get_guardrail_info()
+        health_status["guardrails"] = {
+            "status": "healthy",
+            "checksum": guardrail_info["checksum"][:8]
+        }
+    except Exception as e:
+        health_status["guardrails"] = {
+            "status": "degraded",
+            "error": str(e)
+        }
+    
+    # Check rate limiting
+    try:
+        if limiter:
+            health_status["rate_limiting"] = {"status": "enabled"}
+        else:
+            health_status["rate_limiting"] = {"status": "disabled"}
+    except Exception as e:
+        health_status["rate_limiting"] = {
+            "status": "error",
+            "error": str(e)
+        }
+    
+    # Check tracing
+    try:
+        current_span = trace.get_current_span()
+        health_status["tracing"] = {
+            "status": "enabled" if current_span.is_recording() else "disabled"
+        }
+    except Exception as e:
+        health_status["tracing"] = {
+            "status": "error", 
+            "error": str(e)
+        }
+    
+    return health_status
+
 # Add new usage stats endpoint for DANK-4.2
 @app.get("/usage-stats")
 @tenant_rate_limit("status")

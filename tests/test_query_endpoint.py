@@ -534,3 +534,55 @@ def test_guardrail_default_configuration():
     bedrock_config = DEFAULT_GUARDRAIL["bedrock_config"]
     assert "model_settings" in bedrock_config
     assert "retrieval_config" in bedrock_config 
+
+def test_health_check_endpoint(test_client):
+    """Test the health check endpoint for Route 53 health checks."""
+    response = test_client.get("/health")
+    assert response.status_code == 200
+    data = response.json()
+    
+    # Verify required health check fields
+    assert "status" in data
+    assert "timestamp" in data
+    assert "version" in data
+    assert "environment" in data
+    assert "guardrails" in data
+    assert "rate_limiting" in data
+    assert "tracing" in data
+    
+    # Verify health status
+    assert data["status"] == "healthy"
+    assert data["environment"] == "test"
+    
+    # Check component statuses
+    assert data["guardrails"]["status"] in ["healthy", "degraded"]
+    assert data["rate_limiting"]["status"] in ["enabled", "disabled"]
+    assert data["tracing"]["status"] in ["enabled", "disabled"]
+
+def test_vpc_connectivity_concepts():
+    """Test VPC connectivity configuration concepts."""
+    # This test verifies that VPC-related configuration is properly structured
+    # In a real deployment, this would test actual VPC endpoint connectivity
+    
+    # Test that we have the necessary VPC configuration files
+    import os
+    vpc_config_exists = os.path.exists("terraform/vpc-connectivity.tf")
+    assert vpc_config_exists, "VPC connectivity configuration should exist"
+    
+    multi_region_config_exists = os.path.exists("terraform/multi-region.tf")
+    assert multi_region_config_exists, "Multi-region configuration should exist"
+
+def test_regional_deployment_configuration(test_client):
+    """Test multi-region deployment configuration."""
+    # Verify that health check endpoint includes region information
+    response = test_client.get("/health")
+    assert response.status_code == 200
+    data = response.json()
+    
+    # Should include region information for Route 53 routing
+    assert "region" in data
+    
+    # In a real deployment, this would test:
+    # - Route 53 latency routing
+    # - Health check failover
+    # - Cross-region KMS key access 
