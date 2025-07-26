@@ -1,0 +1,5 @@
+# Development dependencies
+black==24.4.2
+isort==5.13.2
+pytest==8.2.2
+httpx==0.28.1
