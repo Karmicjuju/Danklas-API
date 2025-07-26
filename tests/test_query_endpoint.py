@@ -293,3 +293,94 @@ def test_kb_access_function(monkeypatch):
     with pytest.raises(HTTPException) as exc_info:
         check_kb_access(request, "kb-acme-corp-documents", ["admin"], env="prod")
     assert "requires one of roles" in str(exc_info.value.detail) 
+
+def test_usage_stats_endpoint(test_client):
+    """Test the usage statistics endpoint."""
+    response = test_client.get("/usage-stats")
+    # In test mode, unauthenticated requests should get 401 since tenant_id is "unauthenticated"
+    # which triggers the authentication required check
+    assert response.status_code == 401
+    data = response.json()
+    assert "Authentication required" in data["detail"]
+
+def test_rate_limiting_configuration():
+    """Test rate limiting configuration and tier detection."""
+    from app.rate_limiting import USAGE_TIERS, get_tenant_tier
+    from unittest.mock import Mock
+    
+    # Test tier configurations exist
+    assert "free" in USAGE_TIERS
+    assert "pro" in USAGE_TIERS
+    assert "dank_ultra" in USAGE_TIERS
+    
+    # Test tier detection
+    request = Mock()
+    request.state.roles = ["user"]
+    assert get_tenant_tier(request) == "free"
+    
+    request.state.roles = ["pro"]
+    assert get_tenant_tier(request) == "pro"
+    
+    request.state.roles = ["dank_ultra"]
+    assert get_tenant_tier(request) == "dank_ultra"
+
+def test_tenant_identifier_function():
+    """Test tenant identifier generation for rate limiting."""
+    from app.rate_limiting import get_tenant_identifier
+    from unittest.mock import Mock
+    
+    # Test with authenticated tenant
+    request = Mock()
+    request.state.tenant_id = "test-tenant"
+    identifier = get_tenant_identifier(request)
+    assert identifier == "tenant:test-tenant"
+    
+    # Test with unauthenticated request (fallback to IP)
+    request = Mock()
+    request.state.tenant_id = None
+    request.client.host = "192.168.1.1"
+    
+    # Mock the get_remote_address function
+    from app.rate_limiting import get_remote_address
+    original_get_remote_address = get_remote_address
+    
+    def mock_get_remote_address(req):
+        return "192.168.1.1"
+    
+    import app.rate_limiting
+    app.rate_limiting.get_remote_address = mock_get_remote_address
+    
+    try:
+        identifier = get_tenant_identifier(request)
+        assert identifier == "ip:192.168.1.1"
+    finally:
+        app.rate_limiting.get_remote_address = original_get_remote_address
+
+def test_rate_limiting_disabled_in_test():
+    """Test that rate limiting is properly disabled in test environment."""
+    from app.rate_limiting import create_limiter
+    import os
+    
+    # Test environment should disable rate limiting
+    original_env = os.environ.get("ENABLE_RATE_LIMITING")
+    os.environ["ENABLE_RATE_LIMITING"] = "false"
+    
+    try:
+        limiter = create_limiter()
+        assert limiter is None
+    finally:
+        if original_env:
+            os.environ["ENABLE_RATE_LIMITING"] = original_env
+        else:
+            del os.environ["ENABLE_RATE_LIMITING"]
+
+def test_usage_tiers_structure():
+    """Test that usage tiers have the required structure."""
+    from app.rate_limiting import USAGE_TIERS
+    
+    required_fields = ["requests_per_minute", "requests_per_hour", "requests_per_day", "max_kb_queries"]
+    
+    for tier_name, tier_config in USAGE_TIERS.items():
+        for field in required_fields:
+            assert field in tier_config, f"Missing {field} in {tier_name} tier"
+            assert isinstance(tier_config[field], int), f"{field} should be integer in {tier_name} tier" 

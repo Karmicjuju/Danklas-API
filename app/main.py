@@ -15,6 +15,7 @@ from opentelemetry.trace import Status, StatusCode
 
 # Configure tracing before creating app
 from app.tracing import configure_tracing, instrument_fastapi, get_tracer, create_span
+from app.rate_limiting import create_limiter, rate_limit_exceeded_handler, get_tenant_limits, tenant_rate_limit, get_usage_stats
 
 # Initialize tracing
 configure_tracing()
@@ -27,6 +28,16 @@ app = FastAPI(
 
 # Instrument FastAPI with OpenTelemetry
 instrument_fastapi(app)
+
+# Initialize rate limiter
+limiter = create_limiter()
+if limiter:
+    from slowapi.middleware import SlowAPIMiddleware
+    from slowapi.errors import RateLimitExceeded
+    
+    app.state.limiter = limiter
+    app.add_middleware(SlowAPIMiddleware)
+    app.add_exception_handler(RateLimitExceeded, rate_limit_exceeded_handler)
 
 # --- Okta OIDC config (replace with your Okta values) ---
 OKTA_ISSUER = os.getenv("OKTA_ISSUER", "https://YOUR_OKTA_DOMAIN/oauth2/default")
@@ -254,6 +265,25 @@ async def log_requests(request: Request, call_next):
 def read_root():
     return {"Hello": "World"}
 
+# Add new usage stats endpoint for DANK-4.2
+@app.get("/usage-stats")
+@tenant_rate_limit("status")
+async def get_tenant_usage_stats(request: Request):
+    """Get current usage statistics for the authenticated tenant."""
+    tenant_id = getattr(request.state, "tenant_id", "unknown")
+    
+    if tenant_id == "unknown":
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authentication required to view usage statistics"
+        )
+    
+    stats = get_usage_stats(tenant_id)
+    return {
+        "tenant_id": tenant_id,
+        "usage_statistics": stats
+    }
+
 
 class QueryRequest(BaseModel):
     query: str
@@ -297,11 +327,17 @@ def check_kb_access(request: Request, kb_id: str, required_roles: list = None, e
             )
 
 @app.post("/knowledge-bases/{kb_id}/query", response_model=QueryResponse)
-def query_knowledge_base(
+@tenant_rate_limit("query")
+async def query_knowledge_base(
     request: Request,
     kb_id: str = Path(..., description="Knowledge Base ID"),
     body: QueryRequest = Body(...)
 ):
+    # Apply dynamic rate limiting based on tenant tier
+    if limiter:
+        limits = get_tenant_limits(request)
+        limiter.limit(limits)(lambda: None)()
+    
     # Check tenant access to KB
     check_kb_access(request, kb_id, required_roles=["user", "admin", "reader"])
     
@@ -340,10 +376,16 @@ class StatusResponse(BaseModel):
     lastSyncedAt: str
 
 @app.get("/knowledge-bases/{kb_id}/status", response_model=StatusResponse)
-def knowledge_base_status(
+@tenant_rate_limit("status")
+async def knowledge_base_status(
     request: Request,
     kb_id: str = Path(..., description="Knowledge Base ID")
 ):
+    # Apply dynamic rate limiting based on tenant tier
+    if limiter:
+        limits = get_tenant_limits(request)
+        limiter.limit(limits)(lambda: None)()
+    
     # Check tenant access to KB
     check_kb_access(request, kb_id, required_roles=["user", "admin", "reader"])
     
@@ -372,10 +414,16 @@ class RefreshResponse(BaseModel):
     message: str
 
 @app.post("/knowledge-bases/{kb_id}/refresh", response_model=RefreshResponse, status_code=202)
-def refresh_knowledge_base(
+@tenant_rate_limit("refresh")
+async def refresh_knowledge_base(
     request: Request,
     kb_id: str = Path(..., description="Knowledge Base ID")
 ):
+    # Apply dynamic rate limiting based on tenant tier  
+    if limiter:
+        limits = get_tenant_limits(request)
+        limiter.limit(limits)(lambda: None)()
+    
     # Check tenant access to KB (requires admin role for refresh)
     check_kb_access(request, kb_id, required_roles=["admin"])
     
