@@ -1,50 +1,16 @@
-"""Rate limiting and quota management for Danklas API."""
+"""Simplified in-memory rate limiting for Danklas API."""
 
 import logging
-import os
-from functools import wraps
-from typing import Any, Dict, Optional
+import time
+from collections import defaultdict
+from typing import Dict, Tuple
 
-import redis
 from fastapi import HTTPException, Request, status
-from slowapi import Limiter, _rate_limit_exceeded_handler
-from slowapi.errors import RateLimitExceeded
-from slowapi.middleware import SlowAPIMiddleware
-from slowapi.util import get_remote_address
 
 logger = logging.getLogger(__name__)
 
-# Rate limiting configuration
-REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
-DANKLAS_ENV = os.getenv("DANKLAS_ENV", "prod")
-ENABLE_RATE_LIMITING = (
-    os.getenv(
-        "ENABLE_RATE_LIMITING", "true" if DANKLAS_ENV == "prod" else "false"
-    ).lower()
-    == "true"
-)
-
-# Usage tier configurations (DANK-4.2)
-USAGE_TIERS = {
-    "free": {
-        "requests_per_minute": 10,
-        "requests_per_hour": 100,
-        "requests_per_day": 1000,
-        "max_kb_queries": 5,
-    },
-    "pro": {
-        "requests_per_minute": 60,
-        "requests_per_hour": 1000,
-        "requests_per_day": 10000,
-        "max_kb_queries": 50,
-    },
-    "dank_ultra": {
-        "requests_per_minute": 300,
-        "requests_per_hour": 10000,
-        "requests_per_day": 100000,
-        "max_kb_queries": 500,
-    },
-}
+# In-memory storage for rate limiting
+_rate_limit_store: Dict[str, Dict[str, list]] = defaultdict(lambda: defaultdict(list))
 
 
 def get_tenant_identifier(request: Request) -> str:
@@ -53,75 +19,45 @@ def get_tenant_identifier(request: Request) -> str:
     if tenant_id:
         return f"tenant:{tenant_id}"
     # Fallback to IP-based limiting for unauthenticated requests
-    return f"ip:{get_remote_address(request)}"
+    return f"ip:{request.client.host}"
 
 
-def get_tenant_tier(request: Request) -> str:
-    """Get the usage tier for the current tenant."""
-    # In a real implementation, this would query a database or service
-    # For now, extract from roles or default to free tier
-    user_roles = getattr(request.state, "roles", [])
-
-    if "dank_ultra" in user_roles:
-        return "dank_ultra"
-    elif "pro" in user_roles:
-        return "pro"
-    else:
-        return "free"
-
-
-def create_limiter() -> Limiter:
-    """Create and configure the rate limiter."""
-    if not ENABLE_RATE_LIMITING:
-        logger.info("Rate limiting disabled")
-        return None
-
-    try:
-        # Try to connect to Redis for distributed rate limiting
-        redis_client = redis.Redis.from_url(REDIS_URL, decode_responses=True)
-        redis_client.ping()
-
-        limiter = Limiter(
-            key_func=get_tenant_identifier,
-            storage_uri=REDIS_URL,
-            default_limits=["1000/day", "100/hour", "10/minute"],  # Fallback limits
-        )
-        logger.info(f"Rate limiter configured with Redis at {REDIS_URL}")
-        return limiter
-
-    except Exception as e:
-        logger.warning(
-            f"Failed to connect to Redis, falling back to in-memory limiting: {e}"
-        )
-
-        # Fallback to in-memory rate limiting
-        limiter = Limiter(
-            key_func=get_tenant_identifier,
-            default_limits=["1000/day", "100/hour", "10/minute"],
-        )
-        logger.info("Rate limiter configured with in-memory storage")
-        return limiter
+def check_rate_limit(request: Request, limit_type: str = "general") -> bool:
+    """Check if request is within rate limits."""
+    identifier = get_tenant_identifier(request)
+    current_time = time.time()
+    
+    # Define limits based on type
+    limits = {
+        "query": {"requests": 60, "window": 60},  # 60 requests per minute
+        "status": {"requests": 120, "window": 60},  # 120 requests per minute
+        "refresh": {"requests": 10, "window": 60},  # 10 requests per minute
+        "general": {"requests": 100, "window": 60},  # 100 requests per minute
+    }
+    
+    limit_config = limits.get(limit_type, limits["general"])
+    max_requests = limit_config["requests"]
+    window_seconds = limit_config["window"]
+    
+    # Clean old entries
+    cutoff_time = current_time - window_seconds
+    _rate_limit_store[identifier][limit_type] = [
+        timestamp for timestamp in _rate_limit_store[identifier][limit_type]
+        if timestamp > cutoff_time
+    ]
+    
+    # Check if limit exceeded
+    if len(_rate_limit_store[identifier][limit_type]) >= max_requests:
+        return False
+    
+    # Add current request
+    _rate_limit_store[identifier][limit_type].append(current_time)
+    return True
 
 
-def get_tenant_limits(request: Request) -> str:
-    """Get rate limits based on tenant tier."""
-    tier = get_tenant_tier(request)
-    config = USAGE_TIERS.get(tier, USAGE_TIERS["free"])
-
-    # Return limits in slowapi format
-    return f"{config['requests_per_day']}/day;{config['requests_per_hour']}/hour;{config['requests_per_minute']}/minute"
-
-
-def tenant_rate_limit(endpoint_type: str = "general"):
-    """
-    Decorator for tenant-based rate limiting with tier support.
-
-    Args:
-        endpoint_type: Type of endpoint (general, query, status, refresh)
-    """
-
+def rate_limit_middleware(limit_type: str = "general"):
+    """Simple rate limiting middleware."""
     def decorator(func):
-        @wraps(func)
         async def wrapper(*args, **kwargs):
             # Extract request from args/kwargs
             request = None
@@ -129,68 +65,48 @@ def tenant_rate_limit(endpoint_type: str = "general"):
                 if isinstance(arg, Request):
                     request = arg
                     break
-
+            
             if not request:
-                # If no request found in args, look in kwargs
-                request = kwargs.get("request")
-
-            if request and ENABLE_RATE_LIMITING:
-                tenant_id = getattr(request.state, "tenant_id", "unknown")
-                tier = get_tenant_tier(request)
-                config = USAGE_TIERS.get(tier, USAGE_TIERS["free"])
-
-                # Log rate limit check
-                logger.debug(
-                    f"Rate limit check - Tenant: {tenant_id}, Tier: {tier}, Endpoint: {endpoint_type}"
+                for value in kwargs.values():
+                    if isinstance(value, Request):
+                        request = value
+                        break
+            
+            if request and not check_rate_limit(request, limit_type):
+                raise HTTPException(
+                    status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                    detail=f"Rate limit exceeded for {limit_type}",
                 )
-
-                # Special handling for KB query endpoints
-                if endpoint_type == "query":
-                    # Additional quota check for KB queries
-                    # In a real implementation, this would check current usage against limits
-                    pass
-
+            
             return await func(*args, **kwargs)
-
         return wrapper
-
     return decorator
 
 
-def rate_limit_exceeded_handler(request: Request, exc: RateLimitExceeded):
-    """Custom handler for rate limit exceeded errors."""
-    tenant_id = getattr(request.state, "tenant_id", "unknown")
-    tier = get_tenant_tier(request)
-
-    logger.warning(
-        f"Rate limit exceeded - Tenant: {tenant_id}, Tier: {tier}, Path: {request.url.path}"
-    )
-
-    response = HTTPException(
-        status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-        detail={
-            "error": "Rate limit exceeded",
-            "message": f"Too many requests for tier '{tier}'. Please upgrade your plan or try again later.",
-            "tier": tier,
-            "retry_after": exc.retry_after,
-            "limits": USAGE_TIERS.get(tier, USAGE_TIERS["free"]),
-        },
-    )
-    return response
-
-
-def get_usage_stats(tenant_id: str) -> Dict[str, Any]:
-    """Get current usage statistics for a tenant."""
-    # In a real implementation, this would query the rate limiting storage
-    # For now, return mock statistics
-    return {
-        "current_usage": {
-            "requests_today": 150,
-            "requests_hour": 25,
-            "requests_minute": 2,
-            "kb_queries": 12,
-        },
-        "limits": USAGE_TIERS["free"],
-        "tier": "free",
-        "reset_time": "2024-07-26T00:00:00Z",
-    }
+def get_usage_stats(tenant_id: str) -> Dict[str, any]:
+    """Get usage statistics for a tenant."""
+    identifier = f"tenant:{tenant_id}"
+    current_time = time.time()
+    
+    stats = {}
+    for limit_type in ["query", "status", "refresh", "general"]:
+        # Count requests in last hour
+        hour_ago = current_time - 3600
+        requests_last_hour = len([
+            timestamp for timestamp in _rate_limit_store[identifier][limit_type]
+            if timestamp > hour_ago
+        ])
+        
+        # Count requests in last day
+        day_ago = current_time - 86400
+        requests_last_day = len([
+            timestamp for timestamp in _rate_limit_store[identifier][limit_type]
+            if timestamp > day_ago
+        ])
+        
+        stats[limit_type] = {
+            "requests_last_hour": requests_last_hour,
+            "requests_last_day": requests_last_day,
+        }
+    
+    return stats
