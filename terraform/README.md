@@ -1,16 +1,49 @@
-# Danklas-API Terraform Root Module
+# Danklas API Terraform Configuration
 
-This directory contains the root Terraform module for provisioning Danklas-API infrastructure.
+This directory contains Terraform configuration for deploying the simplified Danklas API infrastructure.
 
-## Usage
+## Architecture
 
-1. Update the `backend` block in `main.tf` with your S3 bucket and region for remote state.
-2. Run `terraform init` to initialize the backend.
-3. Run `terraform plan` and `terraform apply` to provision resources.
+The infrastructure includes:
+- **IAM Role and Policies**: For Bedrock Knowledge Base access and CloudWatch logging
+- **CloudWatch Log Group**: For application logs (30-day retention)
+- **ECS Task Definition**: Example containerized deployment configuration
 
-## Requirements
-- Terraform >= 1.3.0
-- AWS provider >= 5.0
+## Key Features
 
-## Structure
-- `main.tf` — Root module, AWS provider, backend config 
+- **Minimal IAM Permissions**: Only what's needed for Bedrock queries and logging
+- **Bedrock Integration**: Full access to Knowledge Bases and Foundation Models
+- **Guardrail Support**: Access to Bedrock Guardrails for content filtering
+- **Container Ready**: ECS Fargate task definition included
+
+## Environment Variables
+
+The ECS task definition references these SSM parameters:
+- `/danklas/okta/issuer` - Okta OIDC issuer URL
+- `/danklas/okta/audience` - Okta OIDC audience
+- `/danklas/bedrock/guardrail-id` - Bedrock Guardrail ID
+- `/danklas/bedrock/guardrail-version` - Bedrock Guardrail Version
+
+## Deployment
+
+1. Update the S3 bucket name in the backend configuration
+2. Create the required SSM parameters
+3. Update the ECR image URL in the task definition
+4. Deploy:
+
+```bash
+terraform init
+terraform plan
+terraform apply
+```
+
+## Simplified Design
+
+This configuration has been significantly simplified from the original:
+- **No API Gateway**: Deploy behind ALB or use direct container access
+- **No VPC Endpoints**: Uses default VPC or existing networking
+- **No Multi-Region**: Single region deployment
+- **No Rate Limiting**: Application handles this if needed
+- **No SSM Dependencies**: Guardrails are static environment variables
+
+The focus is on core Bedrock integration with minimal operational overhead.

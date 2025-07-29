@@ -1,14 +1,25 @@
 # Danklas API
 
-FastAPI project setup for multi-tenant Amazon Bedrock Knowledge Bases facade.
+A simplified identity-based orchestrator for Amazon Bedrock Knowledge Bases that provides secure, tenant-isolated access with automatic metadata filtering and content guardrails.
 
-## FastAPI Project Setup
+## Overview
 
-This project uses Poetry for dependency management and FastAPI for the web framework.
+This API serves as a secure filtering layer between clients and Amazon Bedrock Knowledge Bases. It extracts identity information from JWT tokens and applies metadata filters to ensure users only access their organization's data, while applying content guardrails for safety.
+
+## Key Features
+
+- **🔐 Identity-Based Security**: Automatic tenant isolation via JWT token claims
+- **🛡️ Metadata Filtering**: Role and department-based access control  
+- **🚨 Content Guardrails**: Static Bedrock guardrail configuration for content safety
+- **⚡ Simplified Architecture**: Single endpoint, minimal dependencies, focused functionality
+- **🐳 Container Ready**: Multi-stage Docker build with distroless runtime
+
+## Quick Start
 
 ### Prerequisites
-- Python 3.13 or higher
-- Poetry
+- Python 3.10 or higher
+- AWS credentials configured
+- Bedrock Knowledge Base and Guardrail configured in AWS
 
 ### Installation
 ```bash
@@ -17,10 +28,10 @@ python -m venv venv
 source venv/bin/activate  # On Windows: venv\Scripts\activate
 
 # Install dependencies
-poetry install
+pip install -r requirements.txt -r requirements-dev.txt
 
 # Run the application
-poetry run uvicorn app.main:app --reload
+uvicorn app.main:app --reload
 ```
 
 ### Environment Variables
@@ -30,69 +41,145 @@ poetry run uvicorn app.main:app --reload
 | `DANKLAS_ENV` | Environment mode (dev/test/prod) | `prod` |
 | `OKTA_ISSUER` | Okta OIDC issuer URL | Required |
 | `OKTA_AUDIENCE` | Okta OIDC audience | `api://default` |
-| `OTEL_SERVICE_NAME` | OpenTelemetry service name | `danklas-api` |
-| `OTEL_SERVICE_VERSION` | OpenTelemetry service version | `1.0.0` |
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | OTLP endpoint for traces | `http://localhost:4317` |
-| `OTEL_EXPORTER_OTLP_INSECURE` | Use insecure OTLP connection | `true` |
-
-### OpenTelemetry Tracing
-
-The application includes comprehensive distributed tracing with OpenTelemetry:
-
-- **Automatic instrumentation** for FastAPI and HTTP requests
-- **Custom spans** for knowledge base operations (query, status, refresh)
-- **AWS X-Ray compatible** trace IDs for seamless AWS integration
-- **Trace context correlation** in logs (trace_id, span_id)
-- **OTLP export** to AWS X-Ray via OpenTelemetry Collector
-
-#### Local Development
-
-For local development without an OTEL collector, the application will log warnings about failed exports but continue to function normally. To run with tracing:
-
-1. Install AWS OTEL Collector or use a local OTEL endpoint
-2. Set `OTEL_EXPORTER_OTLP_ENDPOINT` to your collector endpoint
-3. Traces will be exported and can be viewed in AWS X-Ray console
+| `BEDROCK_GUARDRAIL_ID` | Bedrock Guardrail ID to apply | Required |
+| `BEDROCK_GUARDRAIL_VERSION` | Bedrock Guardrail version | `1` |
+| `AWS_REGION` | AWS region for Bedrock client | `us-east-1` |
 
 ### Testing
 ```bash
 # Run all tests
-poetry run pytest
+pytest
 
 # Run with coverage
-poetry run pytest --cov=app
+pytest --cov=app
+
+# Run specific test file
+pytest tests/test_query_endpoint.py
 ```
 
-## Project Structure
+## API Usage
 
+### Authentication
+Include a Bearer token in the Authorization header:
+```bash
+curl -H "Authorization: Bearer <jwt-token>" \
+     -H "Content-Type: application/json" \
+     -d '{"query": "What is machine learning?"}' \
+     https://your-api/knowledge-bases/kb-your-org-docs/query
+```
+
+### Query Endpoint
+**POST** `/knowledge-bases/{kb_id}/query`
+
+```json
+{
+  "query": "What are the latest product features?",
+  "metadata_filters": {
+    "document_type": "product_docs"
+  }
+}
+```
+
+**Response:**
+```json
+{
+  "answer": "Based on the latest product documentation...",
+  "citations": [
+    "s3://your-bucket/product-docs/features.pdf",
+    "s3://your-bucket/product-docs/changelog.pdf"
+  ]
+}
+```
+
+## Architecture
+
+### Simplified Design
+- **276 lines** of core application code (vs 656 in original)  
+- **8 dependencies** (vs 23 in original)
+- **Single endpoint** focus on knowledge base queries
+- **No complex infrastructure** dependencies (Redis, SSM, OpenTelemetry)
+
+### Security Model
+1. **JWT Token** → Extract `tenant_id`, `roles`, `department`
+2. **Metadata Filters** → Automatic tenant isolation + role-based access
+3. **Bedrock API** → Call with combined filters and static guardrails
+4. **Response** → Clean answer and citations
+
+### Project Structure
 ```
 Danklas-API/
 ├── app/
-│   ├── main.py          # FastAPI application and endpoints
-│   └── tracing.py       # OpenTelemetry configuration
+│   └── main.py              # Single FastAPI application (276 lines)
 ├── tests/
-│   └── test_query_endpoint.py  # API endpoint tests
-├── terraform/           # Infrastructure as Code
-├── pyproject.toml      # Poetry dependencies
-├── Dockerfile          # Multi-stage container build
-└── README.md           # This file
+│   └── test_query_endpoint.py  # Comprehensive test suite (261 lines)
+├── terraform/
+│   ├── main.tf              # Simplified AWS infrastructure
+│   └── README.md            # Deployment guide
+├── requirements.txt         # 8 core dependencies
+├── Dockerfile              # Multi-stage container build
+├── CLAUDE.md               # Development guidance
+└── README.md               # This file
 ```
 
-## Features Implemented
+## Data Requirements
 
-### Epic 0 - Foundation ✅
-- [x] DANK-0.1: FastAPI + Poetry + Docker + CI/CD
-- [x] DANK-0.2: Terraform root module scaffold
+For metadata filtering to work, your Knowledge Base documents should include `.metadata.json` files:
 
-### Epic 1 - Authentication & Authorization ✅  
-- [x] DANK-1.1: Okta OIDC JWT validation
-- [x] DANK-1.2: Environment-based auth bypass for development
+**Example: `document.pdf.metadata.json`**
+```json
+{
+  "tenant_id": "acme-corp",
+  "access_level": "general",
+  "department": "engineering",
+  "document_type": "technical_spec",
+  "created_date": "2024-01-15"
+}
+```
 
-### Epic 2 - Core KB Endpoints ✅
-- [x] DANK-2.1: `/knowledge-bases/{id}/query` endpoint
-- [x] DANK-2.2: `/knowledge-bases/{id}/status` endpoint  
-- [x] DANK-2.3: `/knowledge-bases/{id}/refresh` endpoint
+## Deployment
 
-### Epic 3 - Observability ✅
-- [x] DANK-3.1: Structured JSON logging
-- [x] DANK-3.2: Audit log retention (400 days)
-- [x] DANK-3.3: OpenTelemetry tracing with X-Ray integration 
+### Docker
+```bash
+docker build -t danklas-api .
+docker run -p 8000:8000 \
+  -e OKTA_ISSUER=https://your-okta.com/oauth2/default \
+  -e BEDROCK_GUARDRAIL_ID=your-guardrail-id \
+  danklas-api
+```
+
+### AWS ECS (Terraform)
+```bash
+cd terraform
+terraform init
+terraform plan
+terraform apply
+```
+
+## Migration from v1.0
+
+This v2.0 represents a major simplification:
+
+### Removed Components
+- ❌ Complex guardrails management (SSM Parameter Store)
+- ❌ Redis-based rate limiting with usage tiers
+- ❌ OpenTelemetry tracing and X-Ray integration
+- ❌ Admin endpoints for guardrail management
+- ❌ Multi-region deployment complexity
+- ❌ VPC endpoints and complex networking
+
+### Simplified Approach
+- ✅ Static guardrail configuration via environment variables
+- ✅ Identity-based security through metadata filtering
+- ✅ Direct Bedrock API integration (no mocks)
+- ✅ Minimal infrastructure requirements
+- ✅ Container-first deployment model
+
+## Contributing
+
+1. **Code Formatting**: Use `black` and `isort`
+2. **Testing**: All tests must pass with `pytest`
+3. **Documentation**: Update CLAUDE.md for architecture changes
+
+## License
+
+Private project - see repository settings for access permissions.

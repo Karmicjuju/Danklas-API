@@ -4,19 +4,23 @@
 FROM python:3.13-slim as builder
 WORKDIR /app
 
-# Install Poetry and build dependencies
-RUN pip install poetry
-COPY pyproject.toml poetry.lock* ./
-RUN poetry export -f requirements.txt --output requirements.txt --without-hashes
+# Copy requirements and install dependencies
+COPY requirements.txt ./
 RUN pip install --prefix=/install -r requirements.txt
 
 # Copy app code
-COPY . .
+COPY app/ ./app/
 
 # Final stage: Distroless
 FROM gcr.io/distroless/python3-debian12
 WORKDIR /app
+
+# Copy installed packages and app code
 COPY --from=builder /install /usr/local
-COPY --from=builder /app /app
+COPY --from=builder /app ./
+
+# Expose port
 EXPOSE 8000
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"] 
+
+# Run the application
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
