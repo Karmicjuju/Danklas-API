@@ -1,0 +1,31 @@
+{
+  "project_name": "Project with Audio Hooks",
+  "hooks": {
+    "on_task_complete": {
+      "enabled": true,
+      "command": ".claude/hooks/on_complete.sh",
+      "description": "Play success sound when task completes"
+    },
+    "on_input_request": {
+      "enabled": true,
+      "command": ".claude/hooks/on_input_request.sh",
+      "description": "Play bonk sound when waiting for input"
+    },
+    "on_error": {
+      "enabled": false,
+      "command": "osascript -e 'beep 3'",
+      "description": "Play error sound on failures"
+    }
+  },
+  "audio": {
+    "enabled": true,
+    "success_sound": ".claude/sounds/success.aiff",
+    "input_sound": ".claude/sounds/bonk.aiff",
+    "volume": 0.7
+  },
+  "notifications": {
+    "show_completion": true,
+    "show_errors": true,
+    "sound_enabled": true
+  }
+}
