@@ -8,7 +8,7 @@ import boto3
 import requests
 from fastapi import Body, FastAPI, HTTPException, Path, Request, status
 from jose import JWTError, jwt
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from starlette.middleware.base import BaseHTTPMiddleware
 
 # --- Environment Configuration ---
@@ -28,8 +28,44 @@ bedrock_client = boto3.client("bedrock-agent-runtime", region_name=AWS_REGION)
 # Initialize FastAPI app
 app = FastAPI(
     title="Danklas API",
-    description="Identity-based orchestrator for Amazon Bedrock Knowledge Bases",
+    description="""
+    Identity-based orchestrator for Amazon Bedrock Knowledge Bases
+    
+    This API provides secure, tenant-isolated access to Amazon Bedrock Knowledge Bases with:
+    - **🔐 JWT-based Authentication**: Okta OIDC token validation
+    - **🛡️ Automatic Metadata Filtering**: Tenant, role, and department-based access control
+    - **🚨 Content Guardrails**: Built-in Bedrock guardrail integration
+    - **⚡ Simplified Architecture**: Single endpoint, minimal dependencies
+    
+    ## Authentication
+    
+    Include a Bearer token in the Authorization header:
+    ```
+    Authorization: Bearer <your-jwt-token>
+    ```
+    
+    ## Required JWT Claims
+    
+    Your JWT token must include:
+    - `tenant_id` (or `custom:tenant_id`, `tenantId`): Organization identifier
+    - `roles` (or `custom:roles`, `groups`): User roles (e.g., ["user"], ["admin"])
+    - `department` (optional): Department for additional filtering
+    
+    ## Knowledge Base Access
+    
+    - KB IDs should start with `kb-{tenant_id}-` for tenant-specific access
+    - KB IDs starting with `kb-shared-` are accessible to all tenants
+    - Admin users see all access levels, regular users only see "general" level documents
+    """,
     version="2.0.0",
+    contact={
+        "name": "Danklas API Support",
+        "url": "https://github.com/your-org/danklas-api",
+    },
+    license_info={
+        "name": "Private License",
+        "url": "https://github.com/your-org/danklas-api/blob/main/LICENSE",
+    },
 )
 
 # Basic logging configuration
@@ -180,34 +216,180 @@ def check_kb_access(request: Request, kb_id: str):
 
 # --- Data Models ---
 class QueryRequest(BaseModel):
-    query: str
-    metadata_filters: Dict[str, Any] = None
+    """Request model for knowledge base queries."""
+    
+    query: str = Field(
+        ..., 
+        description="The question or query to ask the knowledge base",
+        example="What are the latest product features for enterprise customers?",
+        min_length=1,
+        max_length=2000
+    )
+    metadata_filters: Dict[str, Any] = Field(
+        default=None,
+        description="Additional metadata filters to apply (combined with identity-based filters)",
+        example={
+            "document_type": "product_docs",
+            "created_date": {"gte": "2024-01-01"}
+        }
+    )
+
+    class Config:
+        schema_extra = {
+            "example": {
+                "query": "What are the latest product features for enterprise customers?",
+                "metadata_filters": {
+                    "document_type": "product_docs",
+                    "access_level": "premium"
+                }
+            }
+        }
 
 
 class QueryResponse(BaseModel):
-    answer: str
-    citations: List[str]
+    """Response model for knowledge base queries."""
+    
+    answer: str = Field(
+        ..., 
+        description="The generated answer from the knowledge base",
+        example="Based on the latest product documentation, our enterprise features include..."
+    )
+    citations: List[str] = Field(
+        ...,
+        description="List of source document URIs that were used to generate the answer", 
+        example=[
+            "s3://your-bucket/enterprise-docs/features-2024.pdf",
+            "s3://your-bucket/product-docs/changelog-q1.pdf"
+        ]
+    )
+
+    class Config:
+        schema_extra = {
+            "example": {
+                "answer": "Based on the latest product documentation, our enterprise features include advanced analytics, custom integrations, and dedicated support. These features are designed for organizations with complex requirements...",
+                "citations": [
+                    "s3://your-bucket/enterprise-docs/features-2024.pdf",
+                    "s3://your-bucket/product-docs/changelog-q1.pdf"
+                ]
+            }
+        }
 
 
 # --- Endpoints ---
-@app.get("/")
+@app.get(
+    "/",
+    summary="API Root",
+    description="Returns basic API information and status",
+    response_description="API welcome message and description",
+    tags=["General"]
+)
 def read_root():
-    return {"message": "Danklas API - Identity-based Bedrock orchestrator"}
+    """Get basic API information."""
+    return {
+        "message": "Danklas API - Identity-based Bedrock orchestrator",
+        "version": "2.0.0",
+        "documentation": "/docs",
+        "health": "/health"
+    }
 
 
-@app.get("/health")
+@app.get(
+    "/health",
+    summary="Health Check",
+    description="Check API health status and environment information",
+    response_description="Health status, environment, and version information",
+    tags=["General"]
+)
 async def health_check():
-    """Simple health check endpoint."""
+    """
+    Health check endpoint for monitoring and load balancer checks.
+    
+    Returns:
+    - status: Always 'healthy' if API is running
+    - environment: Current environment (dev/test/prod)
+    - version: API version
+    """
     return {"status": "healthy", "environment": DANKLAS_ENV, "version": "2.0.0"}
 
 
-@app.post("/knowledge-bases/{kb_id}/query", response_model=QueryResponse)
+@app.post(
+    "/knowledge-bases/{kb_id}/query",
+    response_model=QueryResponse,
+    summary="Query Knowledge Base",
+    description="Query a knowledge base with automatic identity-based filtering and content guardrails",
+    response_description="Answer and citations from the knowledge base",
+    tags=["Knowledge Base"],
+    responses={
+        200: {
+            "description": "Successful query response",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "answer": "Based on the latest product documentation, our enterprise features include advanced analytics, custom integrations, and dedicated support.",
+                        "citations": [
+                            "s3://your-bucket/enterprise-docs/features-2024.pdf",
+                            "s3://your-bucket/product-docs/changelog-q1.pdf"
+                        ]
+                    }
+                }
+            }
+        },
+        401: {"description": "Missing or invalid JWT token"},
+        403: {"description": "Access denied to knowledge base or insufficient permissions"},
+        422: {"description": "Invalid request format or missing required fields"},
+        500: {"description": "Internal server error or Bedrock API failure"}
+    }
+)
 async def query_knowledge_base(
     request: Request,
-    kb_id: str = Path(..., description="Knowledge Base ID"),
+    kb_id: str = Path(
+        ..., 
+        description="Knowledge Base ID (must start with 'kb-{tenant_id}-' or 'kb-shared-')",
+        example="kb-acme-corp-docs",
+        regex=r"^kb-[a-zA-Z0-9\-]+$"
+    ),
     body: QueryRequest = Body(...),
 ):
-    """Query a knowledge base with identity-based filtering and guardrails."""
+    """
+    Query a knowledge base with automatic identity-based security filtering.
+    
+    ## Security Features
+    
+    - **Authentication**: Requires valid JWT Bearer token
+    - **Tenant Isolation**: Users only access their organization's data
+    - **Role-Based Access**: Admin users see all documents, regular users see only "general" level
+    - **Department Filtering**: Optional department-based document filtering
+    - **Content Guardrails**: Built-in Bedrock guardrails for content safety
+    
+    ## Metadata Filtering
+    
+    The API automatically applies security filters based on your JWT token:
+    - `tenant_id`: Matches your organization
+    - `access_level`: "general" for regular users, all levels for admins
+    - `department`: Your department (if specified in token)
+    
+    Additional user-provided filters are combined with these security filters.
+    
+    ## Knowledge Base Access
+    
+    - KB IDs starting with `kb-{your-tenant-id}-` are accessible to your tenant
+    - KB IDs starting with `kb-shared-` are accessible to all tenants
+    - Other KB IDs will return 403 Forbidden
+    
+    ## Example Usage
+    
+    ```bash
+    curl -X POST "https://api.example.com/knowledge-bases/kb-acme-corp-docs/query" \\
+         -H "Authorization: Bearer your-jwt-token" \\
+         -H "Content-Type: application/json" \\
+         -d '{
+           "query": "What are the latest product features?",
+           "metadata_filters": {
+             "document_type": "product_docs"
+           }
+         }'
+    ```
+    """
 
     # Check access to the knowledge base
     check_kb_access(request, kb_id)
