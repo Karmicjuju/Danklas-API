@@ -98,12 +98,19 @@ def verify_jwt(token: str):
 class AuthMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         # Skip auth for health check and docs
-        public_paths = {"/", "/docs", "/redoc", "/openapi.json", "/favicon.ico", "/health"}
-        
+        public_paths = {
+            "/",
+            "/docs",
+            "/redoc",
+            "/openapi.json",
+            "/favicon.ico",
+            "/health",
+        }
+
         # Skip auth in test environment
         if DANKLAS_ENV == "test":
             return await call_next(request)
-            
+
         if request.url.path in public_paths:
             return await call_next(request)
 
@@ -133,22 +140,22 @@ def build_metadata_filter(identity: Dict[str, Any], kb_id: str) -> Dict[str, Any
     """Build metadata filter based on JWT identity for secure data access."""
     tenant_id = identity["tenant_id"]
     roles = identity["roles"]
-    
+
     # Base tenant filter - users can only access their tenant's data
     filters = [{"equals": {"key": "tenant_id", "value": tenant_id}}]
-    
+
     # Add role-based access control
     if "admin" not in roles:
         # Non-admin users only see general access level documents
         filters.append({"equals": {"key": "access_level", "value": "general"}})
-    
+
     # Add department-based filtering if department is specified
     if department := identity.get("department"):
         filters.append({"equals": {"key": "department", "value": department}})
-    
+
     # Additional KB-specific filtering could go here
     # e.g., filters based on the specific knowledge base ID
-    
+
     return {"andAll": filters}
 
 
@@ -156,12 +163,11 @@ def check_kb_access(request: Request, kb_id: str):
     """Basic access control for knowledge base."""
     if DANKLAS_ENV == "test":
         return
-        
+
     tenant_id = getattr(request.state, "tenant_id", None)
     if not tenant_id:
         raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN, 
-            detail="No tenant context available"
+            status_code=status.HTTP_403_FORBIDDEN, detail="No tenant context available"
         )
 
     # Simple check: KB ID should start with tenant ID or be shared
@@ -192,11 +198,7 @@ def read_root():
 @app.get("/health")
 async def health_check():
     """Simple health check endpoint."""
-    return {
-        "status": "healthy",
-        "environment": DANKLAS_ENV,
-        "version": "2.0.0"
-    }
+    return {"status": "healthy", "environment": DANKLAS_ENV, "version": "2.0.0"}
 
 
 @app.post("/knowledge-bases/{kb_id}/query", response_model=QueryResponse)
@@ -206,10 +208,10 @@ async def query_knowledge_base(
     body: QueryRequest = Body(...),
 ):
     """Query a knowledge base with identity-based filtering and guardrails."""
-    
+
     # Check access to the knowledge base
     check_kb_access(request, kb_id)
-    
+
     # Extract identity context
     identity = {
         "tenant_id": request.state.tenant_id,
@@ -217,21 +219,16 @@ async def query_knowledge_base(
         "sub": request.state.user["sub"],
         "department": request.state.user.get("department"),
     }
-    
+
     # Build metadata filter based on identity
     metadata_filter = build_metadata_filter(identity, kb_id)
-    
+
     # Merge with any additional user-provided filters
     if body.metadata_filters:
         # Combine user filters with identity-based security filters
-        combined_filter = {
-            "andAll": [
-                metadata_filter,
-                body.metadata_filters
-            ]
-        }
+        combined_filter = {"andAll": [metadata_filter, body.metadata_filters]}
         metadata_filter = combined_filter
-    
+
     try:
         # Call Bedrock RetrieveAndGenerate API
         response = bedrock_client.retrieve_and_generate(
@@ -243,19 +240,17 @@ async def query_knowledge_base(
                     "generationConfiguration": {
                         "guardrailConfiguration": {
                             "guardrailId": BEDROCK_GUARDRAIL_ID,
-                            "guardrailVersion": BEDROCK_GUARDRAIL_VERSION
+                            "guardrailVersion": BEDROCK_GUARDRAIL_VERSION,
                         }
                     },
                     "retrievalConfiguration": {
-                        "vectorSearchConfiguration": {
-                            "filter": metadata_filter
-                        }
-                    }
+                        "vectorSearchConfiguration": {"filter": metadata_filter}
+                    },
                 },
-                "type": "KNOWLEDGE_BASE"
-            }
+                "type": "KNOWLEDGE_BASE",
+            },
         )
-        
+
         # Extract response data
         answer = response["output"]["text"]
         citations = [
@@ -263,14 +258,16 @@ async def query_knowledge_base(
             for cite in response.get("citations", [])
             if cite.get("retrievedReferences")
         ]
-        
-        logger.info(f"Successfully processed query for tenant: {identity['tenant_id']}, KB: {kb_id}")
-        
+
+        logger.info(
+            f"Successfully processed query for tenant: {identity['tenant_id']}, KB: {kb_id}"
+        )
+
         return QueryResponse(answer=answer, citations=citations)
-        
+
     except Exception as e:
         logger.error(f"Bedrock API error for tenant {identity['tenant_id']}: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to process knowledge base query"
+            detail="Failed to process knowledge base query",
         )
