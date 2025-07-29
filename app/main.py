@@ -217,62 +217,72 @@ def check_kb_access(request: Request, kb_id: str):
 # --- Data Models ---
 class QueryRequest(BaseModel):
     """Request model for knowledge base queries."""
-    
+
     query: str = Field(
-        ..., 
+        ...,
         description="The question or query to ask the knowledge base",
-        example="What are the latest product features for enterprise customers?",
         min_length=1,
-        max_length=2000
+        max_length=2000,
+        json_schema_extra={
+            "example": "What are the latest product features for enterprise customers?"
+        },
     )
     metadata_filters: Dict[str, Any] = Field(
         default=None,
         description="Additional metadata filters to apply (combined with identity-based filters)",
-        example={
-            "document_type": "product_docs",
-            "created_date": {"gte": "2024-01-01"}
-        }
+        json_schema_extra={
+            "example": {
+                "document_type": "product_docs",
+                "created_date": {"gte": "2024-01-01"},
+            }
+        },
     )
 
-    class Config:
-        schema_extra = {
+    model_config = {
+        "json_schema_extra": {
             "example": {
                 "query": "What are the latest product features for enterprise customers?",
                 "metadata_filters": {
                     "document_type": "product_docs",
-                    "access_level": "premium"
-                }
+                    "access_level": "premium",
+                },
             }
         }
+    }
 
 
 class QueryResponse(BaseModel):
     """Response model for knowledge base queries."""
-    
+
     answer: str = Field(
-        ..., 
+        ...,
         description="The generated answer from the knowledge base",
-        example="Based on the latest product documentation, our enterprise features include..."
+        json_schema_extra={
+            "example": "Based on the latest product documentation, our enterprise features include..."
+        },
     )
     citations: List[str] = Field(
         ...,
-        description="List of source document URIs that were used to generate the answer", 
-        example=[
-            "s3://your-bucket/enterprise-docs/features-2024.pdf",
-            "s3://your-bucket/product-docs/changelog-q1.pdf"
-        ]
+        description="List of source document URIs that were used to generate the answer",
+        json_schema_extra={
+            "example": [
+                "s3://your-bucket/enterprise-docs/features-2024.pdf",
+                "s3://your-bucket/product-docs/changelog-q1.pdf",
+            ]
+        },
     )
 
-    class Config:
-        schema_extra = {
+    model_config = {
+        "json_schema_extra": {
             "example": {
                 "answer": "Based on the latest product documentation, our enterprise features include advanced analytics, custom integrations, and dedicated support. These features are designed for organizations with complex requirements...",
                 "citations": [
                     "s3://your-bucket/enterprise-docs/features-2024.pdf",
-                    "s3://your-bucket/product-docs/changelog-q1.pdf"
-                ]
+                    "s3://your-bucket/product-docs/changelog-q1.pdf",
+                ],
             }
         }
+    }
 
 
 # --- Endpoints ---
@@ -281,7 +291,7 @@ class QueryResponse(BaseModel):
     summary="API Root",
     description="Returns basic API information and status",
     response_description="API welcome message and description",
-    tags=["General"]
+    tags=["General"],
 )
 def read_root():
     """Get basic API information."""
@@ -289,7 +299,7 @@ def read_root():
         "message": "Danklas API - Identity-based Bedrock orchestrator",
         "version": "2.0.0",
         "documentation": "/docs",
-        "health": "/health"
+        "health": "/health",
     }
 
 
@@ -298,12 +308,12 @@ def read_root():
     summary="Health Check",
     description="Check API health status and environment information",
     response_description="Health status, environment, and version information",
-    tags=["General"]
+    tags=["General"],
 )
 async def health_check():
     """
     Health check endpoint for monitoring and load balancer checks.
-    
+
     Returns:
     - status: Always 'healthy' if API is running
     - environment: Current environment (dev/test/prod)
@@ -328,25 +338,27 @@ async def health_check():
                         "answer": "Based on the latest product documentation, our enterprise features include advanced analytics, custom integrations, and dedicated support.",
                         "citations": [
                             "s3://your-bucket/enterprise-docs/features-2024.pdf",
-                            "s3://your-bucket/product-docs/changelog-q1.pdf"
-                        ]
+                            "s3://your-bucket/product-docs/changelog-q1.pdf",
+                        ],
                     }
                 }
-            }
+            },
         },
         401: {"description": "Missing or invalid JWT token"},
-        403: {"description": "Access denied to knowledge base or insufficient permissions"},
+        403: {
+            "description": "Access denied to knowledge base or insufficient permissions"
+        },
         422: {"description": "Invalid request format or missing required fields"},
-        500: {"description": "Internal server error or Bedrock API failure"}
-    }
+        500: {"description": "Internal server error or Bedrock API failure"},
+    },
 )
 async def query_knowledge_base(
     request: Request,
     kb_id: str = Path(
-        ..., 
+        ...,
         description="Knowledge Base ID (must start with 'kb-{tenant_id}-' or 'kb-shared-')",
-        example="kb-acme-corp-docs",
-        regex=r"^kb-[a-zA-Z0-9\-]+$"
+        pattern=r"^kb-[a-zA-Z0-9\-]+$",
+        examples=["kb-acme-corp-docs"],
     ),
     body: QueryRequest = Body(...),
 ):
