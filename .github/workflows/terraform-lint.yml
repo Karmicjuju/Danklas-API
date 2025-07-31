@@ -169,7 +169,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           ref: ${{ github.event.pull_request.head.ref }}
-          token: ${{ secrets.GITHUB_TOKEN }}
+          token: ${{ secrets.GH_PAT }}
 
       - name: Render terraform docs and push changes back to PR
         uses: terraform-docs/gh-actions@v1.0.0
@@ -177,7 +177,7 @@ jobs:
           working-dir: terraform/
           output-file: README.md
           output-method: inject
-          git-push: true
+          git-push: false
           git-commit-message: "terraform-docs: automated action"
 
       - name: Render terraform docs for dev environment
@@ -186,7 +186,7 @@ jobs:
           working-dir: terraform/environments/dev/
           output-file: README.md
           output-method: inject
-          git-push: true
+          git-push: false
           git-commit-message: "terraform-docs: automated action"
 
       - name: Render terraform docs for prod environment
@@ -195,5 +195,5 @@ jobs:
           working-dir: terraform/environments/prod/
           output-file: README.md
           output-method: inject
-          git-push: true
+          git-push: false
           git-commit-message: "terraform-docs: automated action"
