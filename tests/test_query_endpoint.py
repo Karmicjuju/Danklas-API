@@ -42,9 +42,7 @@ def mock_avp_allow_response():
     """Mock response from AVP is_authorized API - Allow decision"""
     return {
         "decision": "ALLOW",
-        "determiningPolicies": [
-            {"policyId": "policy-123", "policyType": "STATIC"}
-        ],
+        "determiningPolicies": [{"policyId": "policy-123", "policyType": "STATIC"}],
         "errors": [],
     }
 
@@ -81,20 +79,20 @@ def mock_bedrock_list_response():
                 "knowledgeBaseId": "kb-engineering-docs",
                 "name": "Engineering Documentation",
                 "description": "Technical docs for engineering team",
-                "status": "ACTIVE"
+                "status": "ACTIVE",
             },
             {
                 "knowledgeBaseId": "kb-shared-public",
-                "name": "Public Knowledge Base", 
+                "name": "Public Knowledge Base",
                 "description": "Shared public documentation",
-                "status": "ACTIVE"
+                "status": "ACTIVE",
             },
             {
                 "knowledgeBaseId": "kb-finance-docs",
                 "name": "Finance Documentation",
                 "description": "Financial documents and policies",
-                "status": "ACTIVE"
-            }
+                "status": "ACTIVE",
+            },
         ]
     }
 
@@ -123,7 +121,11 @@ def test_root_endpoint(test_client):
 @patch("app.main.avp_client")
 @patch("app.main.bedrock_client")
 def test_query_knowledge_base_success(
-    mock_bedrock_client, mock_avp_client, test_client, mock_bedrock_response, mock_avp_allow_response
+    mock_bedrock_client,
+    mock_avp_client,
+    test_client,
+    mock_bedrock_response,
+    mock_avp_allow_response,
 ):
     """Test successful knowledge base query."""
     mock_bedrock_client.retrieve_and_generate.return_value = mock_bedrock_response
@@ -170,7 +172,11 @@ def test_query_knowledge_base_success(
 @patch("app.main.avp_client")
 @patch("app.main.bedrock_client")
 def test_query_knowledge_base_with_metadata_filters(
-    mock_bedrock_client, mock_avp_client, test_client, mock_bedrock_response, mock_avp_allow_response
+    mock_bedrock_client,
+    mock_avp_client,
+    test_client,
+    mock_bedrock_response,
+    mock_avp_allow_response,
 ):
     """Test knowledge base query with additional metadata filters."""
     mock_bedrock_client.retrieve_and_generate.return_value = mock_bedrock_response
@@ -226,7 +232,9 @@ def test_query_knowledge_base_missing_query(test_client):
 
 @patch("app.main.avp_client")
 @patch("app.main.bedrock_client")
-def test_query_knowledge_base_bedrock_error(mock_bedrock_client, mock_avp_client, test_client, mock_avp_allow_response):
+def test_query_knowledge_base_bedrock_error(
+    mock_bedrock_client, mock_avp_client, test_client, mock_avp_allow_response
+):
     """Test handling of Bedrock API errors."""
     mock_bedrock_client.retrieve_and_generate.side_effect = Exception(
         "Bedrock API error"
@@ -322,8 +330,6 @@ def test_build_metadata_filter_with_department():
         f for f in filters if f.get("equals", {}).get("key") == "department"
     )
     assert dept_filter["equals"]["value"] == "engineering"
-
-
 
 
 # Test environment verification
@@ -461,7 +467,11 @@ def test_avp_context_formatting(mock_avp_client):
 @patch("app.main.avp_client")
 @patch("app.main.bedrock_client")
 def test_refresh_knowledge_base_success(
-    mock_bedrock_client, mock_avp_client, test_client, mock_bedrock_refresh_response, mock_avp_allow_response
+    mock_bedrock_client,
+    mock_avp_client,
+    test_client,
+    mock_bedrock_refresh_response,
+    mock_avp_allow_response,
 ):
     """Test successful knowledge base refresh."""
     mock_bedrock_client.start_ingestion_job.return_value = mock_bedrock_refresh_response
@@ -470,12 +480,19 @@ def test_refresh_knowledge_base_success(
     with patch("app.main.DANKLAS_ENV", "prod"):
         with patch("app.main.verify_jwt") as mock_verify_jwt:
             mock_verify_jwt.return_value = {
-                "sub": "user123", "dept_id": "test-dept", "roles": ["admin"],
-                "department": None, "exp": 9999999999, "aud": "api://default", "iss": "https://test.okta.com"
+                "sub": "user123",
+                "dept_id": "test-dept",
+                "roles": ["admin"],
+                "department": None,
+                "exp": 9999999999,
+                "aud": "api://default",
+                "iss": "https://test.okta.com",
             }
-            
-            response = test_client.post("/knowledge-bases/kb-test-dept-123/refresh", 
-                                     headers={"Authorization": "Bearer mock-token"})
+
+            response = test_client.post(
+                "/knowledge-bases/kb-test-dept-123/refresh",
+                headers={"Authorization": "Bearer mock-token"},
+            )
 
     assert response.status_code == 200
     data = response.json()
@@ -484,19 +501,28 @@ def test_refresh_knowledge_base_success(
 
 
 @patch("app.main.avp_client")
-def test_refresh_knowledge_base_denied(mock_avp_client, test_client, mock_avp_deny_response):
+def test_refresh_knowledge_base_denied(
+    mock_avp_client, test_client, mock_avp_deny_response
+):
     """Test refresh denied by AVP."""
     mock_avp_client.is_authorized.return_value = mock_avp_deny_response
 
     with patch("app.main.DANKLAS_ENV", "prod"):
         with patch("app.main.verify_jwt") as mock_verify_jwt:
             mock_verify_jwt.return_value = {
-                "sub": "user123", "dept_id": "test-dept", "roles": ["user"],
-                "department": None, "exp": 9999999999, "aud": "api://default", "iss": "https://test.okta.com"
+                "sub": "user123",
+                "dept_id": "test-dept",
+                "roles": ["user"],
+                "department": None,
+                "exp": 9999999999,
+                "aud": "api://default",
+                "iss": "https://test.okta.com",
             }
-            
-            response = test_client.post("/knowledge-bases/kb-test-dept-123/refresh", 
-                                     headers={"Authorization": "Bearer mock-token"})
+
+            response = test_client.post(
+                "/knowledge-bases/kb-test-dept-123/refresh",
+                headers={"Authorization": "Bearer mock-token"},
+            )
 
     assert response.status_code == 403
 
@@ -505,90 +531,123 @@ def test_refresh_knowledge_base_denied(mock_avp_client, test_client, mock_avp_de
 @patch("app.main.avp_client")
 @patch("app.main.bedrock_client")
 def test_list_knowledge_bases_success(
-    mock_bedrock_client, mock_avp_client, test_client, mock_bedrock_list_response, mock_avp_allow_response
+    mock_bedrock_client,
+    mock_avp_client,
+    test_client,
+    mock_bedrock_list_response,
+    mock_avp_allow_response,
 ):
     """Test successful knowledge base listing with filtered results."""
     mock_bedrock_client.list_knowledge_bases.return_value = mock_bedrock_list_response
-    
+
     # Mock AVP to allow list action and specific KBs
     def mock_avp_side_effect(*args, **kwargs):
-        resource_id = kwargs.get('resource', {}).get('entityId', '')
-        action_id = kwargs.get('action', {}).get('actionId', '')
-        
+        resource_id = kwargs.get("resource", {}).get("entityId", "")
+        action_id = kwargs.get("action", {}).get("actionId", "")
+
         # Allow list action
         if action_id == "list":
             return mock_avp_allow_response
         # Allow access to engineering and shared KBs only
-        elif resource_id in ["KnowledgeBase::kb-engineering-docs", "KnowledgeBase::kb-shared-public"]:
+        elif resource_id in [
+            "KnowledgeBase::kb-engineering-docs",
+            "KnowledgeBase::kb-shared-public",
+        ]:
             return mock_avp_allow_response
         else:
             return {"decision": "DENY", "determiningPolicies": [], "errors": []}
-    
+
     mock_avp_client.is_authorized.side_effect = mock_avp_side_effect
 
     with patch("app.main.DANKLAS_ENV", "prod"):
         with patch("app.main.verify_jwt") as mock_verify_jwt:
             mock_verify_jwt.return_value = {
-                "sub": "user123", "dept_id": "engineering", "roles": ["user"],
-                "department": "engineering", "exp": 9999999999, "aud": "api://default", "iss": "https://test.okta.com"
+                "sub": "user123",
+                "dept_id": "engineering",
+                "roles": ["user"],
+                "department": "engineering",
+                "exp": 9999999999,
+                "aud": "api://default",
+                "iss": "https://test.okta.com",
             }
-            
-            response = test_client.get("/knowledge-bases", 
-                                    headers={"Authorization": "Bearer mock-token"})
+
+            response = test_client.get(
+                "/knowledge-bases", headers={"Authorization": "Bearer mock-token"}
+            )
 
     assert response.status_code == 200
     data = response.json()
-    
+
     # Should have 2 accessible KBs (engineering and shared, but not finance)
     assert data["total_count"] == 2
     assert len(data["knowledge_bases"]) == 2
-    
+
     kb_ids = [kb["knowledge_base_id"] for kb in data["knowledge_bases"]]
     assert "kb-engineering-docs" in kb_ids
     assert "kb-shared-public" in kb_ids
     assert "kb-finance-docs" not in kb_ids
-    
+
     # Check KB details
-    engineering_kb = next(kb for kb in data["knowledge_bases"] if kb["knowledge_base_id"] == "kb-engineering-docs")
+    engineering_kb = next(
+        kb
+        for kb in data["knowledge_bases"]
+        if kb["knowledge_base_id"] == "kb-engineering-docs"
+    )
     assert engineering_kb["name"] == "Engineering Documentation"
 
 
 @patch("app.main.avp_client")
-def test_list_knowledge_bases_no_list_permission(mock_avp_client, test_client, mock_avp_deny_response):
+def test_list_knowledge_bases_no_list_permission(
+    mock_avp_client, test_client, mock_avp_deny_response
+):
     """Test KB listing when user doesn't have list permission."""
     mock_avp_client.is_authorized.return_value = mock_avp_deny_response
 
     with patch("app.main.DANKLAS_ENV", "prod"):
         with patch("app.main.verify_jwt") as mock_verify_jwt:
             mock_verify_jwt.return_value = {
-                "sub": "user123", "dept_id": "test-dept", "roles": ["user"],
-                "department": None, "exp": 9999999999, "aud": "api://default", "iss": "https://test.okta.com"
+                "sub": "user123",
+                "dept_id": "test-dept",
+                "roles": ["user"],
+                "department": None,
+                "exp": 9999999999,
+                "aud": "api://default",
+                "iss": "https://test.okta.com",
             }
-            
-            response = test_client.get("/knowledge-bases", 
-                                    headers={"Authorization": "Bearer mock-token"})
+
+            response = test_client.get(
+                "/knowledge-bases", headers={"Authorization": "Bearer mock-token"}
+            )
 
     assert response.status_code == 403
 
 
-@patch("app.main.avp_client") 
+@patch("app.main.avp_client")
 @patch("app.main.bedrock_client")
 def test_list_knowledge_bases_bedrock_error(
     mock_bedrock_client, mock_avp_client, test_client, mock_avp_allow_response
 ):
-    """Test handling of Bedrock API errors during KB listing.""" 
+    """Test handling of Bedrock API errors during KB listing."""
     mock_avp_client.is_authorized.return_value = mock_avp_allow_response
-    mock_bedrock_client.list_knowledge_bases.side_effect = Exception("Bedrock API error")
+    mock_bedrock_client.list_knowledge_bases.side_effect = Exception(
+        "Bedrock API error"
+    )
 
     with patch("app.main.DANKLAS_ENV", "prod"):
         with patch("app.main.verify_jwt") as mock_verify_jwt:
             mock_verify_jwt.return_value = {
-                "sub": "user123", "dept_id": "test-dept", "roles": ["user"],
-                "department": None, "exp": 9999999999, "aud": "api://default", "iss": "https://test.okta.com"
+                "sub": "user123",
+                "dept_id": "test-dept",
+                "roles": ["user"],
+                "department": None,
+                "exp": 9999999999,
+                "aud": "api://default",
+                "iss": "https://test.okta.com",
             }
-            
-            response = test_client.get("/knowledge-bases", 
-                                    headers={"Authorization": "Bearer mock-token"})
+
+            response = test_client.get(
+                "/knowledge-bases", headers={"Authorization": "Bearer mock-token"}
+            )
 
     assert response.status_code == 500
     data = response.json()
