@@ -11,69 +11,76 @@ from jose import JWTError, jwt
 from pydantic import BaseModel, Field
 from starlette.middleware.base import BaseHTTPMiddleware
 
-# --- Environment Configuration ---
+# AWS X-Ray tracing
+from aws_xray_sdk.core import xray_recorder, patch_all
+
+# Configuration
 DANKLAS_ENV = os.getenv("DANKLAS_ENV", "prod")
+AWS_REGION = os.getenv("AWS_REGION", "us-east-1")
+
+# Okta OIDC
 OKTA_ISSUER = os.getenv("OKTA_ISSUER", "https://YOUR_OKTA_DOMAIN/oauth2/default")
 OKTA_AUDIENCE = os.getenv("OKTA_AUDIENCE", "api://default")
 OKTA_JWKS_URI = f"{OKTA_ISSUER}/v1/keys"
 
-# Bedrock configuration
+# AWS Services
 BEDROCK_GUARDRAIL_ID = os.getenv("BEDROCK_GUARDRAIL_ID", "default-guardrail-id")
 BEDROCK_GUARDRAIL_VERSION = os.getenv("BEDROCK_GUARDRAIL_VERSION", "1")
-AWS_REGION = os.getenv("AWS_REGION", "us-east-1")
+AVP_POLICY_STORE_ID = os.getenv("AVP_POLICY_STORE_ID", "default-policy-store")
 
-# Initialize Bedrock client
+# X-Ray Configuration
+XRAY_SERVICE_NAME = os.getenv("XRAY_SERVICE_NAME", "danklas-api")
+
+# Configure X-Ray
+if DANKLAS_ENV != "test":
+    # Auto-instrument AWS services (boto3, requests, etc.)
+    patch_all()
+    # Configure X-Ray recorder
+    xray_recorder.configure(
+        service=XRAY_SERVICE_NAME,
+        dynamic_naming=f"*{XRAY_SERVICE_NAME}*",
+        plugins=("EC2Plugin", "ECSPlugin"),
+    )
+
+# Initialize clients and app
 bedrock_client = boto3.client("bedrock-agent-runtime", region_name=AWS_REGION)
+avp_client = boto3.client("verifiedpermissions", region_name=AWS_REGION)
+app = FastAPI(title="Danklas API", version="2.0.0")
 
-# Initialize FastAPI app
-app = FastAPI(
-    title="Danklas API",
-    description="""
-    Identity-based orchestrator for Amazon Bedrock Knowledge Bases
-    
-    This API provides secure, tenant-isolated access to Amazon Bedrock Knowledge Bases with:
-    - **🔐 JWT-based Authentication**: Okta OIDC token validation
-    - **🛡️ Automatic Metadata Filtering**: Tenant, role, and department-based access control
-    - **🚨 Content Guardrails**: Built-in Bedrock guardrail integration
-    - **⚡ Simplified Architecture**: Single endpoint, minimal dependencies
-    
-    ## Authentication
-    
-    Include a Bearer token in the Authorization header:
-    ```
-    Authorization: Bearer <your-jwt-token>
-    ```
-    
-    ## Required JWT Claims
-    
-    Your JWT token must include:
-    - `tenant_id` (or `custom:tenant_id`, `tenantId`): Organization identifier
-    - `roles` (or `custom:roles`, `groups`): User roles (e.g., ["user"], ["admin"])
-    - `department` (optional): Department for additional filtering
-    
-    ## Knowledge Base Access
-    
-    - KB IDs should start with `kb-{tenant_id}-` for tenant-specific access
-    - KB IDs starting with `kb-shared-` are accessible to all tenants
-    - Admin users see all access levels, regular users only see "general" level documents
-    """,
-    version="2.0.0",
-    contact={
-        "name": "Danklas API Support",
-        "url": "https://github.com/your-org/danklas-api",
-    },
-    license_info={
-        "name": "Private License",
-        "url": "https://github.com/your-org/danklas-api/blob/main/LICENSE",
-    },
-)
-
-# Basic logging configuration
-logging.basicConfig(level=logging.INFO)
+# CloudWatch structured logging
+logging.basicConfig(level=logging.INFO, format='%(message)s')
 logger = logging.getLogger(__name__)
 
+def log_structured(level: str, message: str, **context):
+    """Log structured JSON for CloudWatch parsing with X-Ray trace correlation."""
+    from datetime import datetime, timezone
+    log_data = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "level": level,
+        "service": "danklas-api",
+        "environment": DANKLAS_ENV,
+        "message": message,
+        **context
+    }
+    
+    # Add X-Ray trace correlation (only in non-test environments)
+    if DANKLAS_ENV != "test":
+        try:
+            trace_entity = xray_recorder.get_trace_entity()
+            if trace_entity:
+                log_data["trace_id"] = trace_entity.trace_id
+                if hasattr(trace_entity, 'id'):
+                    log_data["span_id"] = trace_entity.id
+        except:
+            pass  # Ignore X-Ray errors in logging
+    
+    getattr(logger, level.lower())(json.dumps(log_data))
 
-# --- JWT Authentication ---
+# Log service startup
+log_structured("info", "Danklas API starting", version="2.0.0", region=AWS_REGION)
+
+
+# JWT Authentication
 @lru_cache(maxsize=1)
 def get_jwks():
     resp = requests.get(OKTA_JWKS_URI)
@@ -93,11 +100,11 @@ def verify_jwt(token: str):
             options={"verify_aud": True, "verify_iss": True, "verify_exp": True},
         )
 
-        # Extract tenant_id and roles from claims
-        tenant_id = (
-            payload.get("tenant_id")
-            or payload.get("custom:tenant_id")
-            or payload.get("tenantId")
+        # Extract dept_id and roles from claims
+        dept_id = (
+            payload.get("dept_id")
+            or payload.get("custom:dept_id")
+            or payload.get("deptId")
         )
         roles = (
             payload.get("roles", [])
@@ -110,15 +117,15 @@ def verify_jwt(token: str):
             roles = [roles]
 
         # Validate required claims
-        if not tenant_id:
+        if not dept_id:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail="Missing tenant_id claim in token",
+                detail="Missing dept_id claim in token",
             )
 
         return {
             "sub": payload.get("sub"),
-            "tenant_id": tenant_id,
+            "dept_id": dept_id,
             "roles": roles,
             "department": payload.get("department"),
             "exp": payload.get("exp"),
@@ -162,7 +169,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
 
         # Attach user context to request state
         request.state.user = payload
-        request.state.tenant_id = payload["tenant_id"]
+        request.state.dept_id = payload["dept_id"]
         request.state.roles = payload["roles"]
 
         return await call_next(request)
@@ -170,15 +177,134 @@ class AuthMiddleware(BaseHTTPMiddleware):
 
 app.add_middleware(AuthMiddleware)
 
+# X-Ray middleware for FastAPI
+class XrayMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        if DANKLAS_ENV == "test":
+            return await call_next(request)
+            
+        # Start X-Ray segment
+        segment_name = f"{XRAY_SERVICE_NAME}::{request.method}_{request.url.path}"
+        with xray_recorder.in_segment(segment_name) as segment:
+            if segment:
+                segment.put_http_meta("request", {
+                    "method": request.method,
+                    "url": str(request.url),
+                    "user_agent": request.headers.get("user-agent", ""),
+                })
+                
+            response = await call_next(request)
+            
+            if segment:
+                segment.put_http_meta("response", {
+                    "status": response.status_code,
+                })
+                
+            return response
 
-# --- Metadata Filtering ---
+# Add X-Ray middleware (skip in test environment)
+if DANKLAS_ENV != "test":
+    app.add_middleware(XrayMiddleware)
+
+
+# Helper Functions
+def get_identity(request: Request) -> Dict[str, Any]:
+    """Extract identity context from authenticated request."""
+    return {
+        "sub": request.state.user["sub"],
+        "dept_id": request.state.dept_id,
+        "roles": request.state.roles,
+        "department": request.state.user.get("department"),
+    }
+
+
+# Authorization
+def check_authorization(identity: Dict[str, Any], action: str, resource: str) -> None:
+    """
+    Check authorization using AWS Verified Permissions and raise exception if denied.
+    
+    Args:
+        identity: User identity information (from JWT)
+        action: The action being performed (e.g., "query", "read")
+        resource: The resource being accessed (e.g., "KnowledgeBase::kb-tenant-123")
+    
+    Raises:
+        HTTPException: If authorization is denied or check fails
+    """
+    # Skip AVP check in test environment
+    if DANKLAS_ENV == "test":
+        return
+    
+    # Create X-Ray subsegment for authorization check  
+    with xray_recorder.in_subsegment("avp_authorization") as subsegment:
+        if subsegment:
+            subsegment.put_metadata("user_id", identity["sub"])
+            subsegment.put_metadata("dept_id", identity["dept_id"])
+            subsegment.put_metadata("action", action)
+            subsegment.put_metadata("resource", resource)
+    
+        try:
+            # Build AVP request context
+            context = {
+                "contextMap": {
+                    "dept_id": {"string": identity["dept_id"]},
+                    "roles": {"list": [{"string": role} for role in identity["roles"]]},
+                }
+            }
+            
+            if identity.get("department"):
+                context["contextMap"]["department"] = {"string": identity["department"]}
+            
+            # Make authorization decision request
+            response = avp_client.is_authorized(
+                policyStoreId=AVP_POLICY_STORE_ID,
+                principal={"entityType": "User", "entityId": identity["sub"]},
+                action={"actionType": "DanklasAPI::Action", "actionId": action},
+                resource={"entityType": "DanklasAPI::Resource", "entityId": resource},
+                context=context,
+            )
+            
+            if response["decision"] != "ALLOW":
+                if subsegment:
+                    subsegment.put_annotation("decision", "DENY")
+                log_structured("warning", "AVP authorization denied", 
+                             user_id=identity['sub'], dept_id=identity['dept_id'],
+                             action=action, resource=resource,
+                             determining_policies=response.get('determiningPolicies', []))
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Access denied by authorization policy",
+                )
+                
+            if subsegment:
+                subsegment.put_annotation("decision", "ALLOW")
+            log_structured("info", "AVP authorization allowed",
+                         user_id=identity['sub'], dept_id=identity['dept_id'],
+                         action=action, resource=resource)
+                
+        except HTTPException:
+            raise  # Re-raise HTTP exceptions
+        except Exception as e:
+            if subsegment:
+                subsegment.put_annotation("error", True)
+            log_structured("error", "AVP authorization check failed",
+                         user_id=identity['sub'], dept_id=identity['dept_id'],
+                         action=action, resource=resource, error=str(e))
+            # Fail closed - deny access if AVP check fails
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Access denied by authorization policy",
+            )
+
+
+# Metadata Filtering
 def build_metadata_filter(identity: Dict[str, Any], kb_id: str) -> Dict[str, Any]:
     """Build metadata filter based on JWT identity for secure data access."""
-    tenant_id = identity["tenant_id"]
+    dept_id = identity["dept_id"]
     roles = identity["roles"]
 
-    # Base tenant filter - users can only access their tenant's data
-    filters = [{"equals": {"key": "tenant_id", "value": tenant_id}}]
+    # Base department filter - users can only access their department's data
+    filters = [{"equals": {"key": "dept_id", "value": dept_id}}]
 
     # Add role-based access control
     if "admin" not in roles:
@@ -195,97 +321,41 @@ def build_metadata_filter(identity: Dict[str, Any], kb_id: str) -> Dict[str, Any
     return {"andAll": filters}
 
 
-def check_kb_access(request: Request, kb_id: str):
-    """Basic access control for knowledge base."""
-    if DANKLAS_ENV == "test":
-        return
-
-    tenant_id = getattr(request.state, "tenant_id", None)
-    if not tenant_id:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN, detail="No tenant context available"
-        )
-
-    # Simple check: KB ID should start with tenant ID or be shared
-    if not kb_id.startswith(f"kb-{tenant_id}") and not kb_id.startswith("kb-shared"):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail=f"Access denied: KB {kb_id} not accessible by tenant {tenant_id}",
-        )
 
 
-# --- Data Models ---
+# Data Models
 class QueryRequest(BaseModel):
     """Request model for knowledge base queries."""
-
-    query: str = Field(
-        ...,
-        description="The question or query to ask the knowledge base",
-        min_length=1,
-        max_length=2000,
-        json_schema_extra={
-            "example": "What are the latest product features for enterprise customers?"
-        },
-    )
-    metadata_filters: Dict[str, Any] = Field(
-        default=None,
-        description="Additional metadata filters to apply (combined with identity-based filters)",
-        json_schema_extra={
-            "example": {
-                "document_type": "product_docs",
-                "created_date": {"gte": "2024-01-01"},
-            }
-        },
-    )
-
-    model_config = {
-        "json_schema_extra": {
-            "example": {
-                "query": "What are the latest product features for enterprise customers?",
-                "metadata_filters": {
-                    "document_type": "product_docs",
-                    "access_level": "premium",
-                },
-            }
-        }
-    }
+    query: str = Field(..., min_length=1, max_length=2000)
+    metadata_filters: Dict[str, Any] = None
 
 
 class QueryResponse(BaseModel):
     """Response model for knowledge base queries."""
-
-    answer: str = Field(
-        ...,
-        description="The generated answer from the knowledge base",
-        json_schema_extra={
-            "example": "Based on the latest product documentation, our enterprise features include..."
-        },
-    )
-    citations: List[str] = Field(
-        ...,
-        description="List of source document URIs that were used to generate the answer",
-        json_schema_extra={
-            "example": [
-                "s3://your-bucket/enterprise-docs/features-2024.pdf",
-                "s3://your-bucket/product-docs/changelog-q1.pdf",
-            ]
-        },
-    )
-
-    model_config = {
-        "json_schema_extra": {
-            "example": {
-                "answer": "Based on the latest product documentation, our enterprise features include advanced analytics, custom integrations, and dedicated support. These features are designed for organizations with complex requirements...",
-                "citations": [
-                    "s3://your-bucket/enterprise-docs/features-2024.pdf",
-                    "s3://your-bucket/product-docs/changelog-q1.pdf",
-                ],
-            }
-        }
-    }
+    answer: str
+    citations: List[str]
 
 
-# --- Endpoints ---
+class RefreshResponse(BaseModel):
+    """Response model for knowledge base refresh operations."""
+    job_id: str
+    status: str
+    message: str
+
+
+class KnowledgeBase(BaseModel):
+    """Knowledge base information."""
+    knowledge_base_id: str
+    name: str
+
+
+class KnowledgeBaseListResponse(BaseModel):
+    """Response model for knowledge base listing."""
+    knowledge_bases: List[KnowledgeBase]
+    total_count: int
+
+
+# Endpoints
 @app.get(
     "/",
     summary="API Root",
@@ -293,8 +363,11 @@ class QueryResponse(BaseModel):
     response_description="API welcome message and description",
     tags=["General"],
 )
-def read_root():
+async def read_root(request: Request):
     """Get basic API information."""
+    if hasattr(request.state, "user"):
+        check_authorization(get_identity(request), "read", "ApiInfo")
+    
     return {
         "message": "Danklas API - Identity-based Bedrock orchestrator",
         "version": "2.0.0",
@@ -310,109 +383,31 @@ def read_root():
     response_description="Health status, environment, and version information",
     tags=["General"],
 )
-async def health_check():
-    """
-    Health check endpoint for monitoring and load balancer checks.
-
-    Returns:
-    - status: Always 'healthy' if API is running
-    - environment: Current environment (dev/test/prod)
-    - version: API version
-    """
+async def health_check(request: Request):
+    """Health check endpoint for monitoring and load balancer checks."""
+    if hasattr(request.state, "user"):
+        check_authorization(get_identity(request), "read", "HealthStatus")
+    
     return {"status": "healthy", "environment": DANKLAS_ENV, "version": "2.0.0"}
 
 
-@app.post(
-    "/knowledge-bases/{kb_id}/query",
-    response_model=QueryResponse,
-    summary="Query Knowledge Base",
-    description="Query a knowledge base with automatic identity-based filtering and content guardrails",
-    response_description="Answer and citations from the knowledge base",
-    tags=["Knowledge Base"],
-    responses={
-        200: {
-            "description": "Successful query response",
-            "content": {
-                "application/json": {
-                    "example": {
-                        "answer": "Based on the latest product documentation, our enterprise features include advanced analytics, custom integrations, and dedicated support.",
-                        "citations": [
-                            "s3://your-bucket/enterprise-docs/features-2024.pdf",
-                            "s3://your-bucket/product-docs/changelog-q1.pdf",
-                        ],
-                    }
-                }
-            },
-        },
-        401: {"description": "Missing or invalid JWT token"},
-        403: {
-            "description": "Access denied to knowledge base or insufficient permissions"
-        },
-        422: {"description": "Invalid request format or missing required fields"},
-        500: {"description": "Internal server error or Bedrock API failure"},
-    },
-)
+@app.post("/knowledge-bases/{kb_id}/query", response_model=QueryResponse)
 async def query_knowledge_base(
     request: Request,
-    kb_id: str = Path(
-        ...,
-        description="Knowledge Base ID (must start with 'kb-{tenant_id}-' or 'kb-shared-')",
-        pattern=r"^kb-[a-zA-Z0-9\-]+$",
-        examples=["kb-acme-corp-docs"],
-    ),
+    kb_id: str = Path(..., pattern=r"^kb-[a-zA-Z0-9\-]+$"),
     body: QueryRequest = Body(...),
 ):
     """
-    Query a knowledge base with automatic identity-based security filtering.
+    Query a knowledge base with identity-based filtering and content guardrails.
     
-    ## Security Features
-    
-    - **Authentication**: Requires valid JWT Bearer token
-    - **Tenant Isolation**: Users only access their organization's data
-    - **Role-Based Access**: Admin users see all documents, regular users see only "general" level
-    - **Department Filtering**: Optional department-based document filtering
-    - **Content Guardrails**: Built-in Bedrock guardrails for content safety
-    
-    ## Metadata Filtering
-    
-    The API automatically applies security filters based on your JWT token:
-    - `tenant_id`: Matches your organization
-    - `access_level`: "general" for regular users, all levels for admins
-    - `department`: Your department (if specified in token)
-    
-    Additional user-provided filters are combined with these security filters.
-    
-    ## Knowledge Base Access
-    
-    - KB IDs starting with `kb-{your-tenant-id}-` are accessible to your tenant
-    - KB IDs starting with `kb-shared-` are accessible to all tenants
-    - Other KB IDs will return 403 Forbidden
-    
-    ## Example Usage
-    
-    ```bash
-    curl -X POST "https://api.example.com/knowledge-bases/kb-acme-corp-docs/query" \\
-         -H "Authorization: Bearer your-jwt-token" \\
-         -H "Content-Type: application/json" \\
-         -d '{
-           "query": "What are the latest product features?",
-           "metadata_filters": {
-             "document_type": "product_docs"
-           }
-         }'
-    ```
+    Requires JWT authentication. Users can only access their department's data.
+    Admin users see all documents, regular users see only "general" level.
+    User-provided metadata filters are combined with automatic security filters.
     """
 
-    # Check access to the knowledge base
-    check_kb_access(request, kb_id)
-
-    # Extract identity context
-    identity = {
-        "tenant_id": request.state.tenant_id,
-        "roles": request.state.roles,
-        "sub": request.state.user["sub"],
-        "department": request.state.user.get("department"),
-    }
+    # Check authorization and extract identity
+    identity = get_identity(request)
+    check_authorization(identity, "query", f"KnowledgeBase::{kb_id}")
 
     # Build metadata filter based on identity
     metadata_filter = build_metadata_filter(identity, kb_id)
@@ -424,44 +419,169 @@ async def query_knowledge_base(
         metadata_filter = combined_filter
 
     try:
-        # Call Bedrock RetrieveAndGenerate API
-        response = bedrock_client.retrieve_and_generate(
-            input={"text": body.query},
-            retrieveAndGenerateConfiguration={
-                "knowledgeBaseConfiguration": {
-                    "knowledgeBaseId": kb_id,
-                    "modelArn": f"arn:aws:bedrock:{AWS_REGION}::foundation-model/anthropic.claude-3-sonnet-20240229-v1:0",
-                    "generationConfiguration": {
-                        "guardrailConfiguration": {
-                            "guardrailId": BEDROCK_GUARDRAIL_ID,
-                            "guardrailVersion": BEDROCK_GUARDRAIL_VERSION,
-                        }
+        # Create X-Ray subsegment for Bedrock query
+        with xray_recorder.in_subsegment("bedrock_query") as subsegment:
+            if subsegment:
+                subsegment.put_metadata("kb_id", kb_id)
+                subsegment.put_metadata("dept_id", identity["dept_id"])
+                subsegment.put_metadata("user_id", identity["sub"])
+        
+            # Call Bedrock RetrieveAndGenerate API
+            response = bedrock_client.retrieve_and_generate(
+                input={"text": body.query},
+                retrieveAndGenerateConfiguration={
+                    "knowledgeBaseConfiguration": {
+                        "knowledgeBaseId": kb_id,
+                        "modelArn": f"arn:aws:bedrock:{AWS_REGION}::foundation-model/anthropic.claude-3-sonnet-20240229-v1:0",
+                        "generationConfiguration": {
+                            "guardrailConfiguration": {
+                                "guardrailId": BEDROCK_GUARDRAIL_ID,
+                                "guardrailVersion": BEDROCK_GUARDRAIL_VERSION,
+                            }
+                        },
+                        "retrievalConfiguration": {
+                            "vectorSearchConfiguration": {"filter": metadata_filter}
+                        },
                     },
-                    "retrievalConfiguration": {
-                        "vectorSearchConfiguration": {"filter": metadata_filter}
-                    },
+                    "type": "KNOWLEDGE_BASE",
                 },
-                "type": "KNOWLEDGE_BASE",
-            },
-        )
+            )
 
-        # Extract response data
-        answer = response["output"]["text"]
-        citations = [
-            cite["retrievedReferences"][0]["location"]["s3Location"]["uri"]
-            for cite in response.get("citations", [])
-            if cite.get("retrievedReferences")
-        ]
+            # Extract response data
+            answer = response["output"]["text"]
+            citations = [
+                cite["retrievedReferences"][0]["location"]["s3Location"]["uri"]
+                for cite in response.get("citations", [])
+                if cite.get("retrievedReferences")
+            ]
 
-        logger.info(
-            f"Successfully processed query for tenant: {identity['tenant_id']}, KB: {kb_id}"
-        )
+            if subsegment:
+                subsegment.put_annotation("citations_count", len(citations))
+                subsegment.put_annotation("success", True)
 
-        return QueryResponse(answer=answer, citations=citations)
+            log_structured("info", "Knowledge base query successful",
+                         user_id=identity['sub'], dept_id=identity['dept_id'],
+                         kb_id=kb_id, citations_count=len(citations))
+
+            return QueryResponse(answer=answer, citations=citations)
 
     except Exception as e:
-        logger.error(f"Bedrock API error for tenant {identity['tenant_id']}: {str(e)}")
+        log_structured("error", "Knowledge base query failed",
+                     user_id=identity['sub'], dept_id=identity['dept_id'],
+                     kb_id=kb_id, error=str(e))
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to process knowledge base query",
         )
+
+
+@app.post("/knowledge-bases/{kb_id}/refresh", response_model=RefreshResponse)
+async def refresh_knowledge_base(
+    request: Request,
+    kb_id: str = Path(..., pattern=r"^kb-[a-zA-Z0-9\-]+$"),
+):
+    """
+    Start an ingestion job to refresh the knowledge base with latest data sources.
+    
+    Requires JWT authentication and appropriate permissions. Triggers a Bedrock
+    ingestion job that processes new, modified, or deleted documents and updates
+    the vector store. Returns job_id for tracking progress.
+    """
+    
+    # Check authorization and extract identity
+    identity = get_identity(request)
+    check_authorization(identity, "refresh", f"KnowledgeBase::{kb_id}")
+
+    try:
+        # Start ingestion job using Bedrock
+        response = bedrock_client.start_ingestion_job(
+            knowledgeBaseId=kb_id,
+            dataSourceId=f"{kb_id}-datasource",  # Assumes standard naming convention
+            description=f"Refresh job initiated by user {identity['sub']} from department {identity['dept_id']}",
+        )
+        
+        job_id = response["ingestionJob"]["ingestionJobId"]
+        status_value = response["ingestionJob"]["status"]
+        
+        log_structured("info", "Knowledge base refresh initiated",
+                     user_id=identity['sub'], dept_id=identity['dept_id'],
+                     kb_id=kb_id, job_id=job_id, job_status=status_value)
+        
+        return RefreshResponse(
+            job_id=job_id,
+            status=status_value,
+            message="Knowledge base refresh initiated successfully",
+        )
+        
+    except bedrock_client.exceptions.ConflictException:
+        log_structured("warning", "Knowledge base refresh conflict",
+                     user_id=identity['sub'], dept_id=identity['dept_id'],
+                     kb_id=kb_id, reason="job_already_running")
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Another ingestion job is already running for this knowledge base",
+        )
+    except Exception as e:
+        log_structured("error", "Knowledge base refresh failed",
+                     user_id=identity['sub'], dept_id=identity['dept_id'],
+                     kb_id=kb_id, error=str(e))
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to start knowledge base refresh",
+        )
+
+
+@app.get("/knowledge-bases", response_model=KnowledgeBaseListResponse)
+async def list_knowledge_bases(request: Request):
+    """List all knowledge bases accessible to the authenticated user."""
+    identity = get_identity(request)
+    check_authorization(identity, "list", "KnowledgeBase")
+    
+    with xray_recorder.in_subsegment("list_knowledge_bases") as subsegment:
+        if subsegment:
+            subsegment.put_metadata("dept_id", identity["dept_id"])
+            subsegment.put_metadata("user_id", identity["sub"])
+    
+        try:
+            # Get all knowledge bases with pagination
+            response = bedrock_client.list_knowledge_bases(maxResults=100)
+            all_kbs = response.get('knowledgeBaseSummaries', [])
+            
+            while response.get('nextToken'):
+                response = bedrock_client.list_knowledge_bases(
+                    maxResults=100, nextToken=response['nextToken']
+                )
+                all_kbs.extend(response.get('knowledgeBaseSummaries', []))
+            
+            # Filter KBs based on user access
+            accessible_kbs = []
+            for kb in all_kbs:
+                try:
+                    check_authorization(identity, "query", f"KnowledgeBase::{kb['knowledgeBaseId']}")
+                    accessible_kbs.append(KnowledgeBase(
+                        knowledge_base_id=kb['knowledgeBaseId'],
+                        name=kb['name']
+                    ))
+                except HTTPException:
+                    continue
+            
+            if subsegment:
+                subsegment.put_annotation("accessible_kbs", len(accessible_kbs))
+                
+            log_structured("info", "Knowledge base list retrieved",
+                         user_id=identity['sub'], dept_id=identity['dept_id'],
+                         accessible_kbs=len(accessible_kbs))
+            
+            return KnowledgeBaseListResponse(
+                knowledge_bases=accessible_kbs,
+                total_count=len(accessible_kbs)
+            )
+            
+        except Exception as e:
+            log_structured("error", "Knowledge base list failed",
+                         user_id=identity['sub'], dept_id=identity['dept_id'],
+                         error=str(e))
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to retrieve knowledge base list",
+            )
