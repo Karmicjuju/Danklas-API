@@ -1,0 +1,11 @@
+# Copy this file to terraform.tfvars and fill in your values
+
+region = "us-east-1"
+
+# Okta Configuration
+okta_issuer   = "https://your-okta-domain.okta.com/oauth2/default"
+okta_audience = "your-api-audience"
+
+# Bedrock Configuration
+bedrock_guardrail_id      = "your-guardrail-id"
+bedrock_guardrail_version = "DRAFT"

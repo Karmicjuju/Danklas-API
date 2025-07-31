@@ -1,0 +1,75 @@
+name: Build and Push to ECR
+
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'  # Semantic versioning tags (e.g., v1.0.0, v2.1.3)
+
+env:
+  AWS_REGION: us-east-1  # Change this to your AWS region
+  ECR_REPOSITORY: danklas-api  # Change this to your ECR repository name
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    # Only run if tag is on main branch
+    if: github.event.base_ref == 'refs/heads/main' || github.ref_name == 'main'
+    
+    permissions:
+      id-token: write  # Required for OIDC
+      contents: read
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0  # Fetch all history to verify tag is on main
+
+    - name: Verify tag is on main branch
+      run: |
+        # Check if the tagged commit is on the main branch
+        if ! git branch -r --contains ${{ github.sha }} | grep -q "origin/main"; then
+          echo "Error: Tag is not on main branch"
+          exit 1
+        fi
+        echo "Tag is on main branch, proceeding with build"
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}  # Configure this in GitHub secrets
+        role-session-name: GitHubActions-${{ github.run_id }}
+        aws-region: ${{ env.AWS_REGION }}
+
+    - name: Login to Amazon ECR
+      id: login-ecr
+      uses: aws-actions/amazon-ecr-login@v2
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+
+    - name: Generate image metadata
+      id: meta
+      uses: docker/metadata-action@v5
+      with:
+        images: ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}
+        tags: |
+          # Semantic versioning from git tags
+          type=semver,pattern={{version}}
+          type=semver,pattern={{major}}.{{minor}}
+          type=semver,pattern={{major}}
+          type=raw,value=latest
+
+    - name: Build and push Docker image
+      uses: docker/build-push-action@v5
+      with:
+        context: .
+        push: true
+        tags: ${{ steps.meta.outputs.tags }}
+        labels: ${{ steps.meta.outputs.labels }}
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+        platforms: linux/amd64,linux/arm64
+
+    - name: Image digest
+      run: echo ${{ steps.build-and-push.outputs.digest }}
