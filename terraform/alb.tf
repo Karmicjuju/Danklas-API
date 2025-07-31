@@ -6,8 +6,9 @@ module "alb" {
   vpc_id  = module.vpc.vpc_id
   subnets = module.vpc.private_subnets
 
-  load_balancer_type = "application"
-  internal           = true
+  load_balancer_type         = "application"
+  internal                   = true
+  drop_invalid_header_fields = true
 
   security_group_ingress_rules = {
     all_http = {
