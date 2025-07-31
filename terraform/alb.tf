@@ -1,15 +1,17 @@
 module "alb" {
   source  = "terraform-aws-modules/alb/aws"
-  version = "~> 8.0"
+  version = "~> 9.0"
 
   name    = local.name
   vpc_id  = module.vpc.vpc_id
   subnets = module.vpc.private_subnets
 
+  # ALB
   load_balancer_type         = "application"
   internal                   = true
   drop_invalid_header_fields = true
 
+  # Security Group
   security_group_ingress_rules = {
     all_http = {
       from_port   = 80

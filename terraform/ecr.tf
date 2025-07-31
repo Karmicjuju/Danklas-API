@@ -6,25 +6,6 @@ resource "aws_ecr_repository" "app" {
     scan_on_push = true
   }
 
-  lifecycle_policy {
-    policy = jsonencode({
-      rules = [
-        {
-          rulePriority = 1
-          description  = "Keep last 10 images"
-          selection = {
-            tagStatus     = "tagged"
-            tagPrefixList = ["v"]
-            countType     = "imageCountMoreThan"
-            countNumber   = 10
-          }
-          action = {
-            type = "expire"
-          }
-        }
-      ]
-    })
-  }
 
   tags = local.common_tags
 }
