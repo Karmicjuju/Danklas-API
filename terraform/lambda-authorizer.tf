@@ -66,14 +66,14 @@ resource "aws_cloudwatch_log_group" "lambda_authorizer" {
 data "archive_file" "lambda_authorizer_zip" {
   type        = "zip"
   output_path = "${path.module}/lambda-authorizer.zip"
-  
+
   source {
     content = templatefile("${path.module}/../lambda/authorizer/lambda_function.py", {
       # Any template variables if needed
     })
     filename = "lambda_function.py"
   }
-  
+
   source {
     content  = file("${path.module}/../lambda/authorizer/requirements.txt")
     filename = "requirements.txt"
@@ -82,13 +82,13 @@ data "archive_file" "lambda_authorizer_zip" {
 
 # Lambda function
 resource "aws_lambda_function" "authorizer" {
-  filename         = data.archive_file.lambda_authorizer_zip.output_path
-  function_name    = "${local.name}-authorizer"
-  role            = aws_iam_role.lambda_authorizer_role.arn
-  handler         = "lambda_function.lambda_handler"
-  runtime         = "python3.11"
-  timeout         = 30
-  memory_size     = 256
+  filename      = data.archive_file.lambda_authorizer_zip.output_path
+  function_name = "${local.name}-authorizer"
+  role          = aws_iam_role.lambda_authorizer_role.arn
+  handler       = "lambda_function.lambda_handler"
+  runtime       = "python3.11"
+  timeout       = 30
+  memory_size   = 256
 
   source_code_hash = data.archive_file.lambda_authorizer_zip.output_base64sha256
 

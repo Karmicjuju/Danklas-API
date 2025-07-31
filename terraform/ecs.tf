@@ -127,12 +127,29 @@ module "ecs" {
           description              = "Service port"
           source_security_group_id = module.alb.security_group_id
         }
-        egress_all = {
+        egress_https = {
           type        = "egress"
-          from_port   = 0
-          to_port     = 0
-          protocol    = "-1"
+          from_port   = 443
+          to_port     = 443
+          protocol    = "tcp"
           cidr_blocks = ["0.0.0.0/0"]
+          description = "HTTPS outbound for AWS services and OKTA"
+        }
+        egress_http = {
+          type        = "egress"
+          from_port   = 80
+          to_port     = 80
+          protocol    = "tcp"
+          cidr_blocks = ["0.0.0.0/0"]
+          description = "HTTP outbound for health checks"
+        }
+        egress_dns = {
+          type        = "egress"
+          from_port   = 53
+          to_port     = 53
+          protocol    = "udp"
+          cidr_blocks = ["0.0.0.0/0"]
+          description = "DNS resolution"
         }
       }
 

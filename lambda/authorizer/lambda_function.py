@@ -1,12 +1,13 @@
 import json
-import os
 import logging
-from typing import Dict, Any, Optional
-from urllib.request import urlopen
+import os
+import time
+from typing import Any, Dict, Optional
 from urllib.error import URLError
+from urllib.request import urlopen
+
 import jwt
 from jwt import PyJWKClient
-import time
 
 # Configure logging
 logger = logging.getLogger()

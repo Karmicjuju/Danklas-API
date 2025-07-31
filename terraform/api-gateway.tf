@@ -17,20 +17,20 @@ module "api_gateway" {
 
   default_stage_access_log_destination_arn = aws_cloudwatch_log_group.api_gw.arn
   default_stage_access_log_format = jsonencode({
-    requestId      = "$context.requestId"
-    sourceIp       = "$context.identity.sourceIp"
-    requestTime    = "$context.requestTime"
-    protocol       = "$context.protocol"
-    httpMethod     = "$context.httpMethod"
-    resourcePath   = "$context.resourcePath"
-    routeKey       = "$context.routeKey"
-    status         = "$context.status"
-    responseLength = "$context.responseLength"
+    requestId               = "$context.requestId"
+    sourceIp                = "$context.identity.sourceIp"
+    requestTime             = "$context.requestTime"
+    protocol                = "$context.protocol"
+    httpMethod              = "$context.httpMethod"
+    resourcePath            = "$context.resourcePath"
+    routeKey                = "$context.routeKey"
+    status                  = "$context.status"
+    responseLength          = "$context.responseLength"
     integrationErrorMessage = "$context.integrationErrorMessage"
     # Authorizer context
-    authorizerError = "$context.authorizer.error"
+    authorizerError   = "$context.authorizer.error"
     authorizerLatency = "$context.authorizer.latency"
-    authorizerStatus = "$context.authorizer.status"
+    authorizerStatus  = "$context.authorizer.status"
   })
 
   # Create Lambda authorizer
@@ -39,7 +39,7 @@ module "api_gateway" {
       authorizer_type                   = "REQUEST"
       authorizer_uri                    = aws_lambda_function.authorizer.invoke_arn
       authorizer_credentials_arn        = aws_iam_role.api_gateway_authorizer_role.arn
-      authorizer_result_ttl_in_seconds = 300
+      authorizer_result_ttl_in_seconds  = 300
       authorizer_payload_format_version = "1.0"
       identity_sources                  = ["$request.header.Authorization"]
     }
@@ -51,7 +51,7 @@ module "api_gateway" {
       lambda_arn             = null
       payload_format_version = "1.0"
       timeout_milliseconds   = 30000
-      
+
       connection_type = "VPC_LINK"
       vpc_link        = aws_apigatewayv2_vpc_link.this.id
       uri             = "http://${module.alb.dns_name}"
@@ -61,7 +61,7 @@ module "api_gateway" {
       lambda_arn             = null
       payload_format_version = "1.0"
       timeout_milliseconds   = 30000
-      
+
       connection_type = "VPC_LINK"
       vpc_link        = aws_apigatewayv2_vpc_link.this.id
       uri             = "http://${module.alb.dns_name}/health"
@@ -72,11 +72,11 @@ module "api_gateway" {
       lambda_arn             = null
       payload_format_version = "1.0"
       timeout_milliseconds   = 30000
-      
+
       connection_type = "VPC_LINK"
       vpc_link        = aws_apigatewayv2_vpc_link.this.id
       uri             = "http://${module.alb.dns_name}/knowledge-bases/{kb_id}/query"
-      
+
       authorizer_key = "okta-jwt"
     }
 
@@ -84,11 +84,23 @@ module "api_gateway" {
       lambda_arn             = null
       payload_format_version = "1.0"
       timeout_milliseconds   = 30000
-      
+
       connection_type = "VPC_LINK"
       vpc_link        = aws_apigatewayv2_vpc_link.this.id
       uri             = "http://${module.alb.dns_name}/knowledge-bases/{kb_id}/refresh"
-      
+
+      authorizer_key = "okta-jwt"
+    }
+
+    "GET /knowledge-bases" = {
+      lambda_arn             = null
+      payload_format_version = "1.0"
+      timeout_milliseconds   = 30000
+
+      connection_type = "VPC_LINK"
+      vpc_link        = aws_apigatewayv2_vpc_link.this.id
+      uri             = "http://${module.alb.dns_name}/knowledge-bases"
+
       authorizer_key = "okta-jwt"
     }
   }
