@@ -6,13 +6,13 @@ WORKDIR /app
 
 # Copy requirements and install dependencies
 COPY requirements.txt ./
-RUN pip install --prefix=/install -r requirements.txt
+RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
 
 # Copy app code
 COPY app/ ./app/
 
 # Final stage: Distroless
-FROM gcr.io/distroless/python3-debian12
+FROM gcr.io/distroless/python3-debian12:debug-nonroot
 WORKDIR /app
 
 # Copy installed packages and app code

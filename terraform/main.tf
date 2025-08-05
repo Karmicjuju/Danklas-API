@@ -1,11 +1,4 @@
 terraform {
-  required_version = ">= 1.0"
-  required_providers {
-    aws = {
-      source  = "hashicorp/aws"
-      version = "~> 5.0"
-    }
-  }
   backend "s3" {
     bucket = "danklas-terraform-state"
     key    = "danklas-api/terraform.tfstate"
@@ -32,7 +25,7 @@ resource "aws_cloudwatch_log_group" "danklas_app_logs" {
 # IAM Role for Danklas API 
 resource "aws_iam_role" "danklas_api_role" {
   name = "danklas-api-execution-role"
-  
+
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
@@ -159,13 +152,13 @@ resource "aws_ecs_task_definition" "danklas_api" {
   cpu                      = 512
   memory                   = 1024
   execution_role_arn       = aws_iam_role.danklas_api_role.arn
-  task_role_arn           = aws_iam_role.danklas_api_role.arn
+  task_role_arn            = aws_iam_role.danklas_api_role.arn
 
   container_definitions = jsonencode([
     {
       name  = "danklas-api"
       image = "your-ecr-repo/danklas-api:latest"
-      
+
       portMappings = [
         {
           containerPort = 8000
